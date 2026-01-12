@@ -19,6 +19,43 @@ const { convertDiskImageToWebpOrThrow } = require("../services/sharp");
 
 const router = express.Router();
 
+/**
+ * ✅ Product option labels (must match what you store in items)
+ * Mapping:
+ *  - productOptionsATM[0] => atminquery
+ *  - productOptionsATM[1] => atmcashwithdraw
+ *  - productOptionsATM[2] => atmtransfer
+ *  - productOptionsMBbaking[0] or [1] => mobiletransfer
+ *  - productOptionsMBbaking[2] => qrpayment
+ *  - any crossborder item => crossborderproduct
+ */
+const OPT_ATM_INQUERY = "ກວດສອບຍອດເງິນຂ້າມທະນາຄານຜ່ານຕູ້ ATM";
+const OPT_ATM_CASHWITHDRAW = "ຖອນເງິນສົດຂ້າມທະນາຄານຜ່ານຕູ້ ATM";
+const OPT_ATM_TRANSFER = "ໂອນເງິນຂ້າມທະນາຄານຜ່ານຕູ້ ATM";
+
+const OPT_MOBILE_TRANSFER_ACC = "ໂອນເງິນຂ້າມທະນາຄານເທິງມືຖືນຳໃຊ້ເລກບັນຊີ";
+const OPT_MOBILE_TRANSFER_QR = "ໂອນເງິນຂ້າມທະນາຄານຜ່ານ QR CODE";
+const OPT_QR_PAYMENT = "ຊຳລະຄ່າສິນຄ້າ ແລະ ບໍລິການ ໂດຍສະແກນ QR CODE";
+
+function computeProductFlags(CardATM, Mbbankking, Crossborder) {
+  const atmItems = Array.isArray(CardATM?.items) ? CardATM.items : [];
+  const mobileItems = Array.isArray(Mbbankking?.items) ? Mbbankking.items : [];
+  const crossItems = Array.isArray(Crossborder?.items) ? Crossborder.items : [];
+
+  const atminquery = atmItems.includes(OPT_ATM_INQUERY) ? 1 : 0;
+  const atmcashwithdraw = atmItems.includes(OPT_ATM_CASHWITHDRAW) ? 1 : 0;
+  const atmtransfer = atmItems.includes(OPT_ATM_TRANSFER) ? 1 : 0;
+
+  const mobiletransfer =
+    mobileItems.includes(OPT_MOBILE_TRANSFER_ACC) || mobileItems.includes(OPT_MOBILE_TRANSFER_QR) ? 1 : 0;
+
+  const qrpayment = mobileItems.includes(OPT_QR_PAYMENT) ? 1 : 0;
+
+  const crossborderproduct = crossItems.length > 0 ? 1 : 0;
+
+  return { atminquery, atmcashwithdraw, atmtransfer, mobiletransfer, qrpayment, crossborderproduct };
+}
+
 // POST /api/members
 router.post("/", upload.single("image"), async (req, res) => {
   let uploadedDiskPath = "";
@@ -65,6 +102,9 @@ router.post("/", upload.single("image"), async (req, res) => {
     const membermobile = Mbbankking.items.length > 0 ? 1 : 0;
     const membercrossborder = Crossborder.items.length > 0 ? 1 : 0;
 
+    // ✅ NEW: compute tinyint flags from selected items
+    const productFlags = computeProductFlags(CardATM, Mbbankking, Crossborder);
+
     const Color = {
       primary: (gradA || "").trim() || "#38bdf8",
       secondary: (gradB || "").trim() || "#6366f1",
@@ -88,6 +128,7 @@ router.post("/", upload.single("image"), async (req, res) => {
         LinkFB, LinkWeb,
         CardATM, Mbbankking, Crossborder,
         memberATM, membermobile, membercrossborder,
+        atminquery, atmcashwithdraw, atmtransfer, mobiletransfer, qrpayment, crossborderproduct,
         image
       )
       VALUES (
@@ -95,6 +136,7 @@ router.post("/", upload.single("image"), async (req, res) => {
         ?, ?,
         CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON),
         ?, ?, ?,
+        ?, ?, ?, ?, ?, ?,
         ?
       )
     `;
@@ -112,6 +154,15 @@ router.post("/", upload.single("image"), async (req, res) => {
       memberATM,
       membermobile,
       membercrossborder,
+
+      // ✅ NEW FLAGS
+      productFlags.atminquery,
+      productFlags.atmcashwithdraw,
+      productFlags.atmtransfer,
+      productFlags.mobiletransfer,
+      productFlags.qrpayment,
+      productFlags.crossborderproduct,
+
       imageUrl,
     ];
 
@@ -122,7 +173,7 @@ router.post("/", upload.single("image"), async (req, res) => {
       idmember: result.insertId,
       image: imageUrl,
       image_url: absUrl(req, imageUrl),
-      flags: { memberATM, membermobile, membercrossborder },
+      flags: { memberATM, membermobile, membercrossborder, ...productFlags },
       items: {
         CardATM: parseItemsObj(CardATM, []),
         Mbbankking: parseItemsObj(Mbbankking, []),
@@ -251,6 +302,9 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
     const membermobile = Mbbankking?.items?.length ? 1 : 0;
     const membercrossborder = Crossborder?.items?.length ? 1 : 0;
 
+    // ✅ NEW: recompute tinyint flags from updated items
+    const productFlags = computeProductFlags(CardATM, Mbbankking, Crossborder);
+
     let imageUrl = oldImageRel || "";
 
     if (req.file) {
@@ -277,6 +331,12 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
         memberATM = ?,
         membermobile = ?,
         membercrossborder = ?,
+        atminquery = ?,
+        atmcashwithdraw = ?,
+        atmtransfer = ?,
+        mobiletransfer = ?,
+        qrpayment = ?,
+        crossborderproduct = ?,
         image = ?
       WHERE idmember = ?
     `;
@@ -294,6 +354,15 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
       memberATM,
       membermobile,
       membercrossborder,
+
+      // ✅ NEW FLAGS
+      productFlags.atminquery,
+      productFlags.atmcashwithdraw,
+      productFlags.atmtransfer,
+      productFlags.mobiletransfer,
+      productFlags.qrpayment,
+      productFlags.crossborderproduct,
+
       imageUrl,
       id,
     ];

@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "aggregate:visitors": "node src/jobs/aggregateVisitors.js --backfill=180"
+    
   },
   "keywords": [],
   "author": "",
@@ -17,6 +19,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "geoip-lite": "^1.4.10",
+    "i18n-iso-countries": "^7.14.0",
     "multer": "^2.0.2",
     "mysql2": "^3.16.0",
     "sharp": "^0.34.5"
