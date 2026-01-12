@@ -29,6 +29,7 @@ const sharp = require("sharp");
 
 const pool = require("../db/pool");
 const { UPLOAD_DIR } = require("../config/paths");
+const { stringify } = require("querystring");
 
 const router = express.Router();
 
@@ -302,6 +303,7 @@ router.patch(
         if (!String(name).trim()) return res.status(400).json({ ok: false, message: "name cannot be empty" });
         updates.push("`name` = ?");
         params.push(String(name).trim());
+      
       }
       if (role !== undefined) {
         if (!String(role).trim()) return res.status(400).json({ ok: false, message: "role cannot be empty" });
