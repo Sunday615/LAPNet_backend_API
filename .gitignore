@@ -1,0 +1,13 @@
+# Ignore build results
+/build/
+/dist/
+
+# Ignore dependency directory
+node_modules/
+
+# Ignore specific file extensions
+*.log
+*.tmp
+
+# Ignore environment file
+.env

@@ -13,6 +13,9 @@ const announcementRoutes = require("./routes/announcement");
 const jobsRoutes = require("./routes/jobs");
 const emp_lapnetRoutes = require("./routes/emp_lapnet");
 
+const notificationRoute = require("./routes/notifications")
+
+
 
 // ✅ ADD: boarddirector routes
 const boarddirectorRoutes = require("./routes/boarddirector");
@@ -75,6 +78,8 @@ app.use("/api/emp_lapnet", emp_lapnetRoutes);
 app.use("/api/visitors", visitorsRoutes);
 app.use("/api/visitor", visitorsRoutes);
 
+
+app.use("/api/notifications", notificationRoute);
 
 
 
