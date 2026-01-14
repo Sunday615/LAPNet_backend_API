@@ -106,7 +106,7 @@ export async function notify(ctx) {
     );
   }
 
-  // email (ตอนนี้เก็บ log ไว้ก่อน ยังไม่ส่งจริงก็ได้)
+  
   if (channels.email === true) {
     createdIds.push(
       await insertNotificationRow({
@@ -125,7 +125,7 @@ export async function notify(ctx) {
     );
   }
 
-  // push (ตอนนี้เก็บ log ไว้ก่อน)
+ 
   if (channels.push === true) {
     createdIds.push(
       await insertNotificationRow({

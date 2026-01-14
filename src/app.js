@@ -14,7 +14,7 @@ const jobsRoutes = require("./routes/jobs");
 const emp_lapnetRoutes = require("./routes/emp_lapnet");
 
 const notificationRoute = require("./routes/notifications")
-
+const formRoute = require("./routes/form")
 
 
 // ✅ ADD: boarddirector routes
@@ -28,15 +28,18 @@ const visitorsRoutes = require("./routes/visitor/visitors");
 
 
 const app = express();
+
 app.set("trust proxy", true);
+
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
+
 
 // ✅ CORS
 app.use(corsMiddleware);
 app.options(/.*/, require("cors")(corsOptions)); // ✅ FIX: Express/router new versions
 
-// body parsers
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
+
 
 // logger
 app.use(logger);
@@ -81,10 +84,16 @@ app.use("/api/visitor", visitorsRoutes);
 
 app.use("/api/notifications", notificationRoute);
 
+app.use("/api/forms", formRoute);
 
 
 // Health + Root
 const pool = require("./db/pool");
+
+
+// body parsers
+// body parsers (ใช้ชุดเดียวพอ และต้องอยู่ก่อน routes)
+
 
 app.get("/health", async (req, res) => {
     try {
