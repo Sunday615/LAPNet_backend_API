@@ -116,7 +116,8 @@ router.patch("/:id", async (req, res) => {
 
     const sets = [];
     const params = [];
-
+ 
+ 
     if (req.body?.department !== undefined) {
       const department = String(req.body.department || "").trim();
       if (!department) return res.status(400).json({ ok: false, message: "department cannot be empty" });
@@ -197,6 +198,7 @@ router.patch("/:id", async (req, res) => {
       sets.push("`features` = CAST(? AS JSON)");
       params.push(JSON.stringify(featuresToStore));
     }
+   
 
     if (!sets.length) return res.status(400).json({ ok: false, message: "No fields to update" });
 
@@ -214,6 +216,8 @@ router.patch("/:id", async (req, res) => {
 });
 
 // DELETE /api/jobs/:id
+
+
 router.delete("/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);

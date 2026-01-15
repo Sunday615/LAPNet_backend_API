@@ -2,7 +2,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const geoip = require("geoip-lite");
-const pool = require("../../db/pool"); // มีอยู่แล้วในโปรเจกต์คุณ :contentReference[oaicite:3]{index=3}
+const pool = require("../../db/pool"); // :contentReference[oaicite:3]{index=3}
 
 const router = express.Router();
 
@@ -21,18 +21,18 @@ function getCookie(req, name) {
 }
 
 function getClientIp(req) {
-  // ถ้าอยู่หลัง Cloudflare / Proxy
+  // if have behide Cloudflare / Proxy
   const xff = req.headers["x-forwarded-for"];
   if (xff) return String(xff).split(",")[0].trim();
 
-  // express จะมี req.ip แต่ต้องตั้ง trust proxy ให้ถูกใน app.js
+  // express like have req.ip but assign trust proxy corllect at app.js
   if (req.ip) return req.ip;
 
   return req.socket?.remoteAddress || null;
 }
 
 function getCountryFromReq(req, ip) {
-  // Cloudflare header (ถ้ามี)
+  // Cloudflare header (optional)
   const cfCountry = req.headers["cf-ipcountry"];
   if (cfCountry && cfCountry !== "XX") {
     return { country_code: String(cfCountry), country_name: String(cfCountry) };
@@ -64,7 +64,7 @@ function makeSessionId() {
 
 /**
  * POST /api/visitor/track
- * frontend ควรเรียกตอน pageview (โหลดหน้า/เปลี่ยน route)
+ * frontend get api by pageview (loading /change route)
  * body: { path, referrer }
  */
 router.post("/track", express.json(), async (req, res) => {
@@ -117,14 +117,14 @@ router.post("/track", express.json(), async (req, res) => {
 
     res.json({ ok: true, session_id: sid });
   } catch (err) {
-    // ไม่อยากให้ tracking ทำให้เว็บพัง
+    // dont addd fuction tracking website is down 
     res.status(200).json({ ok: false });
   }
 });
 
 /**
  * POST /api/visitor/ping
- * ใช้ทำ realtime (heartbeat) — frontend เรียกทุก ~15 วินาทีระหว่างที่ผู้ใช้งานยังอยู่หน้าเว็บ
+ * use for  realtime (heartbeat) — frontend realtime with around 15 sec for checking realtime user
  */
 router.post("/ping", async (req, res) => {
   try {
@@ -144,7 +144,7 @@ router.post("/ping", async (req, res) => {
 
 /**
  * GET /api/visitor/stats?range=1d|7d|30d|90d
- * คืน totals + series (กราฟ) + topPages + byCountry
+ * return totals + series (graph) + topPages + byCountry
  */
 router.get("/stats", async (req, res) => {
   try {
@@ -233,7 +233,7 @@ router.get("/stats", async (req, res) => {
 
 /**
  * GET /api/visitor/realtime?windowSec=300
- * activeVisitors = sessions ที่ last_seen_at ภายใน window
+ * activeVisitors = sessions at last_seen_at in window
  */
 router.get("/realtime", async (req, res) => {
   try {
@@ -268,7 +268,7 @@ router.get("/realtime", async (req, res) => {
 
 /**
  * GET /api/visitor/realtime/stream?windowSec=300
- * SSE สำหรับ admin dashboard (อัปเดตทุก 2 วิ)
+ * SSE for  admin dashboard (update around 2 sec)
  */
 router.get("/realtime/stream", async (req, res) => {
   const windowSec = Math.max(30, Math.min(3600, Number(req.query.windowSec || 300)));

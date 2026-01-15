@@ -12,7 +12,6 @@ const rawPool = mysql.createPool({
   queueLimit: 0,
 });
 
-// ✅ export แบบ promise
+// ✅ export like promise
 module.exports = rawPool.promise();
-// หรือถ้าคุณอยาก export เป็น object:
-// module.exports = { pool: rawPool.promise(), rawPool };
+

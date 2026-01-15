@@ -8,10 +8,10 @@ const fs = require("fs");
 const poolMod = require("../db/pool");
 const rawPool = poolMod.pool || poolMod;
 
-// ✅ ถ้าเป็น callback pool ให้แปลงเป็น promise pool
+// ✅ if  callback pool convert to promise pool
 const pool = typeof rawPool.promise === "function" ? rawPool.promise() : rawPool;
 
-const { UPLOAD_DIR } = require("../config/paths"); // ✅ ใช้ dir เดียวกับ static ใน app.js
+const { UPLOAD_DIR } = require("../config/paths"); // ✅ use dir like static in app.js
 
 const router = express.Router();
 
@@ -37,7 +37,7 @@ const allowedTypes = new Set([
 
 function parseJsonMaybe(v, fallback) {
   if (v == null) return fallback;
-  if (typeof v === "object") return v; // mysql อาจคืน object มาแล้ว
+  if (typeof v === "object") return v; // mysql fall back object 
   try { return JSON.parse(v); } catch { return fallback; }
 }
 
@@ -295,7 +295,7 @@ router.post("/:id/submissions", upload.any(), async (req, res, next) => {
     );
     const qMap = new Map(qs.map(x => [x.question_uid, x]));
 
-    // group files by question_uid จาก fieldname: file_<qid>
+    // group files by question_uid from fieldname: file_<qid>
     const filesByQid = new Map();
     for (const f of savedFiles) {
       const field = String(f.fieldname || "");
@@ -371,7 +371,7 @@ router.post("/:id/submissions", upload.any(), async (req, res, next) => {
       if (!qMap.has(qid)) continue;
 
       for (const f of files) {
-        // ✅ storage_key เก็บแค่ filename (เรียกดูผ่าน /uploads/<filename>)
+        // ✅ storage_key เก็บแค่ filename (call by  /uploads/<filename>)
         await conn.execute(insFile, [
           submissionId,
           qid,

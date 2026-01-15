@@ -23,6 +23,8 @@ const boarddirectorRoutes = require("./routes/boarddirector");
 // ✅ ADD: visitors routes
 const visitorsRoutes = require("./routes/visitor/visitors");
 
+const formtempleteRoutes = require("./routes/formtemplete")
+
 
 
 
@@ -86,6 +88,7 @@ app.use("/api/notifications", notificationRoute);
 
 app.use("/api/forms", formRoute);
 
+app.use("/api/formtemplates", formtempleteRoutes);
 
 // Health + Root
 const pool = require("./db/pool");

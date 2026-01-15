@@ -82,7 +82,7 @@ function normalizeAnnouncementImageInput(raw) {
   // undefined = not provided (do nothing)
   if (raw === undefined) return undefined;
 
-  // explicit null/empty => remove (แต่ตาราง image NOT NULL -> route จะ reject ตอน insert)
+  // explicit null/empty => remove (table  image NOT NULL -> route will reject when insert)
   if (raw === null) return null;
 
   let v = raw;

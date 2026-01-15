@@ -1,0 +1,116 @@
+{
+  "sourceFormId": null,
+  "payload": {
+    "meta": {
+      "title": "Test save",
+      "description": "Test save ",
+      "collectEmail": false,
+      "allowEditAfterSubmit": false
+    },
+    "questions": [
+      {
+        "id": "q_77c1f320ec7498_1768443531535",
+        "type": "short",
+        "title": "",
+        "description": "",
+        "required": false,
+        "sort_order": 1,
+        "images": [],
+        "options": [],
+        "uploadRestrictEnabled": false,
+        "fileTypes": [],
+        "maxSizeMB": 10,
+        "maxFiles": 1,
+        "uploadPreviewFiles": [],
+        "scoreMax": 5,
+        "scoreIcon": "star",
+        "gridRows": [],
+        "gridCols": []
+      },
+      {
+        "id": "q_dad904e4db8eb8_1768443539121",
+        "type": "option",
+        "title": "",
+        "description": "",
+        "required": false,
+        "sort_order": 2,
+        "images": [],
+        "options": [
+          "Choice 1",
+          "Choice 2"
+        ],
+        "uploadRestrictEnabled": false,
+        "fileTypes": [],
+        "maxSizeMB": 10,
+        "maxFiles": 1,
+        "uploadPreviewFiles": [],
+        "scoreMax": 5,
+        "scoreIcon": "star",
+        "gridRows": [],
+        "gridCols": []
+      },
+      {
+        "id": "q_c1d1090d3b594_1768444802035",
+        "type": "upload",
+        "title": "",
+        "description": "",
+        "required": false,
+        "sort_order": 3,
+        "images": [],
+        "options": [],
+        "uploadRestrictEnabled": false,
+        "fileTypes": [
+          "image",
+          "pdf"
+        ],
+        "maxSizeMB": 10,
+        "maxFiles": 1,
+        "uploadPreviewFiles": [],
+        "scoreMax": 5,
+        "scoreIcon": "star",
+        "gridRows": [],
+        "gridCols": []
+      },
+      {
+        "id": "q_65316a94c9a37_1768444809379",
+        "type": "score",
+        "title": "",
+        "description": "",
+        "required": false,
+        "sort_order": 4,
+        "images": [],
+        "options": [],
+        "uploadRestrictEnabled": false,
+        "fileTypes": [],
+        "maxSizeMB": 10,
+        "maxFiles": 1,
+        "uploadPreviewFiles": [],
+        "scoreMax": 5,
+        "scoreIcon": "star",
+        "gridRows": [],
+        "gridCols": []
+      },
+      {
+        "id": "q_cb39fcca5640e8_1768457913797",
+        "type": "time",
+        "title": "",
+        "description": "",
+        "required": false,
+        "sort_order": 5,
+        "images": [],
+        "options": [],
+        "uploadRestrictEnabled": false,
+        "fileTypes": [],
+        "maxSizeMB": 10,
+        "maxFiles": 1,
+        "uploadPreviewFiles": [],
+        "scoreMax": 5,
+        "scoreIcon": "star",
+        "gridRows": [],
+        "gridCols": []
+      }
+    ]
+  },
+  "name": "Test save (copy)",
+  "note": ""
+}

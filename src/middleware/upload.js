@@ -18,6 +18,7 @@ const storage = multer.diskStorage({
 
     // news
     if (file.fieldname === "hero_img") return cb(null, NEWS_DIR);
+ 
 
     // gallery
     if (file.fieldname === "gallery_files[]" || file.fieldname === "gallery_files") return cb(null, NEWS_GALLERY_DIR);

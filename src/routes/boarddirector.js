@@ -18,7 +18,7 @@ const PK = "idboarddirector";
 const UP_SUBDIR = path.join(UPLOAD_DIR, "boarddirector");
 fs.mkdirSync(UP_SUBDIR, { recursive: true });
 
-// ✅ ใช้ memoryStorage เพื่อเอา buffer ไปแปลงเป็น webp
+// ✅ use  memoryStorage for  buffer cconvert to  webp
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
@@ -28,7 +28,7 @@ const upload = multer({
   },
 });
 
-// helper: รองรับได้ทั้ง bankName/bankname, personName/name
+// helper: support bankName/bankname, personName/name
 function pickBody(req) {
   const b = req.body || {};
   return {
@@ -44,20 +44,20 @@ function unwrap(resultRaw) {
   return Array.isArray(resultRaw) ? resultRaw[0] : resultRaw;
 }
 
-// ✅ ใช้ query เสมอ (หลบปัญหา stmt_execute ของ execute)
+// ✅ use query always (exception for error  stmt_execute of  execute)
 async function db(sql, params = []) {
   const raw = await pool.query(sql, params);
   return unwrap(raw);
 }
 
-// แปลงเป็น MySQL DATETIME (YYYY-MM-DD HH:mm:ss)
+// Convert to  MySQL DATETIME (YYYY-MM-DD HH:mm:ss)
 function toMysqlDateTime(input) {
   const d = input instanceof Date ? input : new Date(input);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
-// ✅ แปลง buffer -> webp แล้วเซฟไฟล์
+// ✅ convert buffer -> webp save file at folder
 async function saveWebp(buffer, prefix) {
   const filename = `${prefix}_${Date.now()}_${crypto.randomBytes(6).toString("hex")}.webp`;
   const fullpath = path.join(UP_SUBDIR, filename);
@@ -71,7 +71,7 @@ async function saveWebp(buffer, prefix) {
   return filename;
 }
 
-// ลบไฟล์จาก URL ที่เก็บเป็น /uploads/...
+// delete URL save by upload  /uploads/...
 function safeUnlinkFromUploads(urlPath) {
   try {
     if (!urlPath || typeof urlPath !== "string") return;
