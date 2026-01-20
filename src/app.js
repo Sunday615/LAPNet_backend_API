@@ -27,6 +27,8 @@ const authRoutes = require("./routes/login/auth");
 
 const formSubmissionsRoute = require('./routes/submission_form/formSubmissions')
 
+
+const announcements = require('./routes/membersbank/announcements')
 const app = express();
 
 // =====================
@@ -108,6 +110,8 @@ app.use("/api/users", userloginRoutes);
 app.use("/api/auth", authRoutes);
 
 app.use("/api/form-submissions", formSubmissionsRoute);
+
+app.use("/api/announcements" , announcements)
 
 
 // =====================
