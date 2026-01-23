@@ -77,6 +77,42 @@ function toSqlDateTime(d) {
   );
 }
 
+function mapSubmissionRow(r) {
+  const out = {
+    id: r.id,
+    templateId: r.template_id,
+    sourceFormId: r.source_form_id,
+    email: r.email,
+    answers: r.answers,
+    submittedAt: r.submitted_at,
+    ip: r.ip,
+    userAgent: r.user_agent,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+
+  try {
+    if (typeof out.answers === "string") out.answers = JSON.parse(out.answers);
+  } catch {}
+
+  return out;
+}
+
+function mapFileRow(r) {
+  return {
+    id: r.id,
+    submissionId: r.submission_id,
+    questionId: r.question_id,
+    fieldName: r.field_name,
+    originalName: r.original_name,
+    mimeType: r.mime_type,
+    sizeBytes: r.size_bytes,
+    storageDriver: r.storage_driver,
+    storagePath: r.storage_path,
+    createdAt: r.created_at,
+  };
+}
+
 // =====================
 // POST /api/form-submissions
 // - multipart/form-data
@@ -209,13 +245,16 @@ router.post("/", upload.any(), async (req, res) => {
 });
 
 // =====================
-// GET /api/form-submissions
+// ✅ GET /api/form-submissions
 // query:
 // - templateId=xxx
 // - email=xxx
 // - limit=50 (default 50, max 200)
 // - offset=0
-// return: ทุก columns จาก table form_submissions
+//
+// return:
+// - ดึงครบ 2 ตาราง: form_submissions + form_submission_files
+// - items: [{...submission, files: [...], assetsFolder }]
 // =====================
 router.get("/", async (req, res) => {
   let conn;
@@ -238,50 +277,59 @@ router.get("/", async (req, res) => {
     const params = [];
 
     if (templateId) {
-      where.push("template_id = ?");
+      where.push("s.template_id = ?");
       params.push(templateId);
     }
     if (email) {
-      where.push("email = ?");
+      where.push("s.email = ?");
       params.push(email);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    // ✅ ดึงทุก columns: ใช้ SELECT s.* แล้ว map ชื่อ snake_case -> camelCase ที่ frontend ใช้ง่าย
-    // ✅ สำคัญ: LIMIT/OFFSET ใส่เป็นตัวเลขใน string (ไม่ใช้ ?)
-    const sql = `
+    // 1) ดึง submissions ก่อน (paginate ที่นี่)
+    const sqlSubs = `
       SELECT s.*
       FROM form_submissions s
       ${whereSql}
       ORDER BY s.id DESC
       LIMIT ${limit} OFFSET ${offset}
     `;
+    const [subRows] = await conn.execute(sqlSubs, params);
 
-    const [rows] = await conn.execute(sql, params);
+    const submissions = subRows.map(mapSubmissionRow);
+    const ids = submissions.map((s) => s.id);
 
-    // ✅ normalize keys + parse answers JSON (ถ้าเป็น string)
-    const items = rows.map((r) => {
-      const out = {
-        id: r.id,
-        templateId: r.template_id,
-        sourceFormId: r.source_form_id,
-        email: r.email,
-        answers: r.answers,
-        submittedAt: r.submitted_at,
-        ip: r.ip,
-        userAgent: r.user_agent,
-        createdAt: r.created_at,
-        updatedAt: r.updated_at,
-      };
+    // 2) ดึง files ของ submissions ทั้งหมดใน 1 query
+    const filesBySubmissionId = new Map();
+    if (ids.length) {
+      const placeholders = ids.map(() => "?").join(",");
+      const [fileRows] = await conn.execute(
+        `
+        SELECT f.*
+        FROM form_submission_files f
+        WHERE f.submission_id IN (${placeholders})
+        ORDER BY f.submission_id ASC, f.id ASC
+        `,
+        ids
+      );
 
-      try {
-        if (typeof out.answers === "string") out.answers = JSON.parse(out.answers);
-      } catch {
-        // ส่งเป็น string ต่อไป ถ้า parse ไม่ได้
+      for (const fr of fileRows) {
+        const f = mapFileRow(fr);
+        const arr = filesBySubmissionId.get(f.submissionId) || [];
+        arr.push(f);
+        filesBySubmissionId.set(f.submissionId, arr);
       }
+    }
 
-      return out;
+    // 3) แนบ files[] กลับไปในแต่ละ submission
+    const items = submissions.map((s) => {
+      const files = filesBySubmissionId.get(s.id) || [];
+      return {
+        ...s,
+        files,
+        assetsFolder: files.length ? `uploads/submit_assets/${s.id}` : null,
+      };
     });
 
     return res.json({ ok: true, items, limit, offset });
@@ -300,8 +348,8 @@ router.get("/", async (req, res) => {
 });
 
 // =====================
-// GET /api/form-submissions/:id
-// return: submission + files[]
+// ✅ GET /api/form-submissions/:id
+// return: submission (ครบ) + files[] (ครบ)
 // =====================
 router.get("/:id", async (req, res) => {
   let conn;
@@ -313,60 +361,40 @@ router.get("/:id", async (req, res) => {
       return res.status(400).json({ ok: false, message: "Invalid id" });
     }
 
-    const [subs] = await conn.execute(
+    // ดึง submission แบบ s.* (ครบทุกคอลัมน์) แล้วค่อย map เป็น camelCase
+    const [subRows] = await conn.execute(
       `
-      SELECT
-        id,
-        template_id AS templateId,
-        source_form_id AS sourceFormId,
-        email,
-        answers,
-        submitted_at AS submittedAt,
-        ip,
-        user_agent AS userAgent,
-        created_at AS createdAt,
-        updated_at AS updatedAt
-      FROM form_submissions
-      WHERE id = ?
+      SELECT s.*
+      FROM form_submissions s
+      WHERE s.id = ?
       LIMIT 1
       `,
       [submissionId]
     );
 
-    if (!subs.length) {
+    if (!subRows.length) {
       return res.status(404).json({ ok: false, message: "Submission not found" });
     }
 
-    const submission = subs[0];
-    try {
-      if (typeof submission.answers === "string") submission.answers = JSON.parse(submission.answers);
-    } catch {}
+    const submission = mapSubmissionRow(subRows[0]);
 
-    const [files] = await conn.execute(
+    const [fileRows] = await conn.execute(
       `
-      SELECT
-        id,
-        submission_id AS submissionId,
-        question_id AS questionId,
-        field_name AS fieldName,
-        original_name AS originalName,
-        mime_type AS mimeType,
-        size_bytes AS sizeBytes,
-        storage_driver AS storageDriver,
-        storage_path AS storagePath,
-        created_at AS createdAt
-      FROM form_submission_files
-      WHERE submission_id = ?
-      ORDER BY id ASC
+      SELECT f.*
+      FROM form_submission_files f
+      WHERE f.submission_id = ?
+      ORDER BY f.id ASC
       `,
       [submissionId]
     );
+
+    const files = fileRows.map(mapFileRow);
 
     return res.json({
       ok: true,
       item: submission,
       files,
-      assetsFolder: `uploads/submit_assets/${submissionId}`,
+      assetsFolder: files.length ? `uploads/submit_assets/${submissionId}` : null,
     });
   } catch (e) {
     console.error("[GET /api/form-submissions/:id] ERROR:", e);
