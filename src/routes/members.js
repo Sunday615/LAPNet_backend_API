@@ -37,6 +37,19 @@ const OPT_MOBILE_TRANSFER_ACC = "ໂອນເງິນຂ້າມທະນາ�
 const OPT_MOBILE_TRANSFER_QR = "ໂອນເງິນຂ້າມທະນາຄານຜ່ານ QR CODE";
 const OPT_QR_PAYMENT = "ຊຳລະຄ່າສິນຄ້າ ແລະ ບໍລິການ ໂດຍສະແກນ QR CODE";
 
+/* -----------------------------
+  ✅ NEW: tinyint(1) parser (for fintech and similar flags)
+----------------------------- */
+function toTinyInt(v, def = 0) {
+  if (v === undefined || v === null || v === "") return def;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (typeof v === "number") return v ? 1 : 0;
+  const s = String(v).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(s)) return 1;
+  if (["0", "false", "no", "off"].includes(s)) return 0;
+  return def;
+}
+
 function computeProductFlags(CardATM, Mbbankking, Crossborder) {
   const atmItems = Array.isArray(CardATM?.items) ? CardATM.items : [];
   const mobileItems = Array.isArray(Mbbankking?.items) ? Mbbankking.items : [];
@@ -61,6 +74,9 @@ router.post("/", upload.single("image"), async (req, res) => {
   let uploadedDiskPath = "";
   try {
     const { bankcode, title, subtitle, link1, link2, gradA, gradB } = req.body;
+
+    // ✅ NEW: fintech tinyint(1) default 0
+    const fintech = toTinyInt(req.body?.fintech ?? req.body?.Fintech, 0);
 
     if (!bankcode?.trim()) return res.status(400).json({ ok: false, message: "bankcode is required" });
     if (!title?.trim()) return res.status(400).json({ ok: false, message: "title is required" });
@@ -129,6 +145,7 @@ router.post("/", upload.single("image"), async (req, res) => {
         CardATM, Mbbankking, Crossborder,
         memberATM, membermobile, membercrossborder,
         atminquery, atmcashwithdraw, atmtransfer, mobiletransfer, qrpayment, crossborderproduct,
+        fintech,
         image
       )
       VALUES (
@@ -137,6 +154,7 @@ router.post("/", upload.single("image"), async (req, res) => {
         CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON),
         ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
+        ?,
         ?
       )
     `;
@@ -163,6 +181,9 @@ router.post("/", upload.single("image"), async (req, res) => {
       productFlags.qrpayment,
       productFlags.crossborderproduct,
 
+      // ✅ NEW: fintech
+      fintech,
+
       imageUrl,
     ];
 
@@ -171,9 +192,10 @@ router.post("/", upload.single("image"), async (req, res) => {
     res.status(201).json({
       ok: true,
       idmember: result.insertId,
+      fintech,
       image: imageUrl,
       image_url: absUrl(req, imageUrl),
-      flags: { memberATM, membermobile, membercrossborder, ...productFlags },
+      flags: { memberATM, membermobile, membercrossborder, ...productFlags, fintech },
       items: {
         CardATM: parseItemsObj(CardATM, []),
         Mbbankking: parseItemsObj(Mbbankking, []),
@@ -192,7 +214,14 @@ router.post("/", upload.single("image"), async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     const [rows] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} ORDER BY idmember DESC`);
-    res.json({ ok: true, data: rows.map((r) => normalizeMemberRow(req, r)) });
+    res.json({
+      ok: true,
+      data: rows.map((r) => {
+        const n = normalizeMemberRow(req, r);
+        const raw = r?.fintech ?? r?.Fintech ?? r?.FINTECH;
+        return { ...n, fintech: toTinyInt(raw, 0) };
+      }),
+    });
   } catch (err) {
     console.error("GET MEMBERS ERROR:", err);
     res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
@@ -208,7 +237,10 @@ router.get("/:id", async (req, res) => {
     const [rows] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
     if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
 
-    res.json({ ok: true, data: normalizeMemberRow(req, rows[0]) });
+    const n = normalizeMemberRow(req, rows[0]);
+    const raw = rows[0]?.fintech ?? rows[0]?.Fintech ?? rows[0]?.FINTECH;
+
+    res.json({ ok: true, data: { ...n, fintech: toTinyInt(raw, 0) } });
   } catch (err) {
     console.error("GET MEMBER BY ID ERROR:", err);
     res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
@@ -235,6 +267,9 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
     const link2Raw = req.body?.link2;
     const gradARaw = req.body?.gradA;
     const gradBRaw = req.body?.gradB;
+
+    // ✅ NEW: fintech
+    const fintechRaw = req.body?.fintech ?? req.body?.Fintech;
 
     const filterproductRaw = req.body?.filterproduct;
 
@@ -273,6 +308,12 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
           ? String(gradBRaw || "").trim() || oldColor.secondary || "#6366f1"
           : oldColor.secondary || "#6366f1",
     };
+
+    // ✅ NEW: fintech keep old if not provided
+    const fintech =
+      fintechRaw !== undefined
+        ? toTinyInt(fintechRaw, 0)
+        : toTinyInt(oldRow?.fintech ?? oldRow?.Fintech ?? oldRow?.FINTECH, 0);
 
     let CardATM = parseItemsObj(oldRow.CardATM, []);
     let Mbbankking = parseItemsObj(oldRow.Mbbankking, []);
@@ -337,6 +378,7 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
         mobiletransfer = ?,
         qrpayment = ?,
         crossborderproduct = ?,
+        fintech = ?,
         image = ?
       WHERE idmember = ?
     `;
@@ -363,6 +405,9 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
       productFlags.qrpayment,
       productFlags.crossborderproduct,
 
+      // ✅ NEW: fintech
+      fintech,
+
       imageUrl,
       id,
     ];
@@ -375,7 +420,10 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
     }
 
     const [rows2] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
-    res.json({ ok: true, message: "Updated", data: normalizeMemberRow(req, rows2[0]) });
+    const n = normalizeMemberRow(req, rows2[0]);
+    const raw = rows2[0]?.fintech ?? rows2[0]?.Fintech ?? rows2[0]?.FINTECH;
+
+    res.json({ ok: true, message: "Updated", data: { ...n, fintech: toTinyInt(raw, 0) } });
   } catch (err) {
     console.error("PATCH MEMBER ERROR:", err);
     if (uploadedDiskPath) await fsp.unlink(uploadedDiskPath).catch(() => {});

@@ -29,6 +29,8 @@ const formSubmissionsRoute = require('./routes/submission_form/formSubmissions')
 
 
 const announcements = require('./routes/membersbank/announcements')
+
+const documentsRoute = require("./routes/uploaddocument/uploaddocument");
 const app = express();
 
 // =====================
@@ -112,6 +114,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/form-submissions", formSubmissionsRoute);
 
 app.use("/api/announcements" , announcements)
+
+app.use("/api/documents", documentsRoute);
 
 
 // =====================
