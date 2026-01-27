@@ -21,22 +21,22 @@ const boarddirectorRoutes = require("./routes/boarddirector");
 const visitorsRoutes = require("./routes/visitor/visitors");
 const formTemplateRoutes = require("./routes/formtemplete");
 const userloginRoutes = require("./routes/login/users");
-
-
 const authRoutes = require("./routes/login/auth");
 
-const formSubmissionsRoute = require('./routes/submission_form/formSubmissions')
-
-
-const announcements = require('./routes/membersbank/announcements')
-
+const formSubmissionsRoute = require("./routes/submission_form/formSubmissions");
+const announcements = require("./routes/membersbank/announcements");
 const documentsRoute = require("./routes/uploaddocument/uploaddocument");
+
+// ✅ CHAT ROUTE
+const chatRoute = require("./routes/chat/chat");
+
 const app = express();
 
 // =====================
 // App / Proxy
 // =====================
 app.set("trust proxy", true);
+app.disable("x-powered-by");
 
 // =====================
 // Body parsing
@@ -48,7 +48,22 @@ app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 // CORS
 // =====================
 app.use(corsMiddleware);
-app.options(/.*/, cors(corsOptions)); // allow preflight for all routes
+
+// ✅ allow custom headers (x-role / x-bankcode)
+app.use((req, res, next) => {
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-role, x-bankcode"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+  );
+  next();
+});
+
+// allow preflight
+app.options(/.*/, cors(corsOptions));
 
 // =====================
 // Logger
@@ -72,21 +87,19 @@ app.use(
   })
 );
 
-
-
 // =====================
 // Routes
 // =====================
 
-// Base /api (optimize etc.)
-app.use("/api", optimizeRoutes);
+// Optimize
+app.use("/api/optimize", optimizeRoutes);
 
 // Content
 app.use("/api/members", membersRoutes);
 app.use("/api/news", newsRoutes);
 app.use("/api/announcement", announcementRoutes);
 
-// Jobs (mount both /jobs-list and /jobs)
+// Jobs
 app.use("/api/jobs-list", jobsRoutes);
 app.use("/api/jobs", jobsRoutes);
 
@@ -94,7 +107,7 @@ app.use("/api/jobs", jobsRoutes);
 app.use("/api/boarddirector", boarddirectorRoutes);
 app.use("/api/emp_lapnet", empLapnetRoutes);
 
-// Visitors (keep both)
+// Visitors
 app.use("/api/visitors", visitorsRoutes);
 app.use("/api/visitor", visitorsRoutes);
 
@@ -104,19 +117,31 @@ app.use("/api/notifications", notificationRoutes);
 // Form Templates
 app.use("/api/form-templates", formTemplateRoutes);
 
-
-// ✅ Users / Login
+// Users / Auth
 app.use("/api/users", userloginRoutes);
-
-// ✅ Auth (login)
 app.use("/api/auth", authRoutes);
 
+// Form submissions
 app.use("/api/form-submissions", formSubmissionsRoute);
 
-app.use("/api/announcements" , announcements)
+// Announcements (members bank)
+app.use("/api/announcements", announcements);
 
+// Documents
 app.use("/api/documents", documentsRoute);
 
+// =====================
+// ✅ CHAT (สำคัญ)
+// =====================
+app.use("/api/chat", chatRoute);
+/*
+  Available:
+  GET    /api/chat/ping
+  POST   /api/chat/conversations/ensure
+  GET    /api/chat/conversations/:id/messages
+  POST   /api/chat/conversations/:id/messages
+  GET    /api/chat/admin/banks
+*/
 
 // =====================
 // Health + Root
@@ -136,53 +161,25 @@ app.get("/", (_req, res) => {
     message: "API running",
     routes: [
       "/health",
-      "/api/optimize (POST multipart: file)",
 
-      "/api/jobs (GET, POST)",
-      "/api/jobs/:id (GET, PATCH, DELETE)",
-      "/api/jobs-list (GET, POST)",
-      "/api/jobs-list/:id (GET, PATCH, DELETE)",
+      "/api/chat/ping",
+      "/api/chat/conversations/ensure",
+      "/api/chat/conversations/:id/messages (GET, POST)",
+      "/api/chat/admin/banks",
 
-      "/api/members (GET, POST)",
-      "/api/members/:id (GET, PATCH, DELETE)",
-
-      "/api/news (GET, POST)",
-      "/api/news/:id (GET, PATCH, DELETE)",
-      "/api/news/insert (POST multipart)  (alias of POST /api/news)",
-
-      "/api/announcement (GET, POST multipart/json)",
-      "/api/announcement/:id (GET, PATCH, DELETE)",
-
-      "/api/boarddirector (GET, POST)",
-      "/api/boarddirector/:id (GET, PATCH, DELETE)",
-
-      "/api/emp_lapnet (GET, POST)",
-      "/api/emp_lapnet/:id (GET, PATCH, DELETE)",
-
-      "/api/notifications (GET/POST/...)",
-
-      // visitors
-      "/api/visitors/track (POST)",
-      "/api/visitors/ping (POST)",
-      "/api/visitors/stats?range=7d (GET)",
-      "/api/visitors/realtime?windowSec=300 (GET)",
-      "/api/visitors/realtime/stream?windowSec=300 (GET - SSE)",
-
-      // form templates
-      "/api/form-templates (GET)",
-      "/api/form-templates/upsert (POST)",
-      "/api/form-templates/:id/activetoggle (PATCH)",
-      "/api/form-templates/:id (DELETE)",
-      "/api/form-templates (DELETE all)",
-
-      // ✅ user / login
-      "/api/users (POST create user)",
-      "/api/users (GET list users) (if implemented)",
-      "/api/users/:id (PATCH/DELETE) (if implemented)",
-      "/api/auth/login (POST) (if implemented in your routes)",
-         // ✅ form  / submissions
-  
-  
+      "/api/members",
+      "/api/news",
+      "/api/announcement",
+      "/api/announcements",
+      "/api/jobs",
+      "/api/jobs-list",
+      "/api/boarddirector",
+      "/api/emp_lapnet",
+      "/api/notifications",
+      "/api/form-templates",
+      "/api/form-submissions",
+      "/api/users",
+      "/api/auth/login",
     ],
   });
 });
