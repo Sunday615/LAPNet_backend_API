@@ -1,4 +1,4 @@
-// routes/membersbank/announcements.js
+ // routes/membersbank/announcements.js
 const express = require("express");
 const router = express.Router();
 const db = require("../../db/pool");
