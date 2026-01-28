@@ -9,26 +9,52 @@ const { notFoundHandler, errorHandler } = require("./middleware/errors");
 
 const pool = require("./db/pool");
 
-// Routes
-const optimizeRoutes = require("./routes/optimize");
-const membersRoutes = require("./routes/members");
-const newsRoutes = require("./routes/news");
-const announcementRoutes = require("./routes/announcement");
-const jobsRoutes = require("./routes/jobs");
-const empLapnetRoutes = require("./routes/emp_lapnet");
-const notificationRoutes = require("./routes/notifications");
-const boarddirectorRoutes = require("./routes/boarddirector");
-const visitorsRoutes = require("./routes/visitor/visitors");
-const formTemplateRoutes = require("./routes/formtemplete");
-const userloginRoutes = require("./routes/login/users");
-const authRoutes = require("./routes/login/auth");
+// ----------------------
+// Small helper: accept either `module.exports = router` OR `module.exports = { router }`
+// ----------------------
+function pickRouter(mod, name = "router") {
+  const r = (mod && mod.router) ? mod.router : mod;
+  if (typeof r !== "function") {
+    const keys = mod && typeof mod === "object" ? Object.keys(mod) : [];
+    throw new TypeError(
+      `[app.js] ${name} is not an express router/function. typeof=${typeof r} keys=${keys.join(",")}`
+    );
+  }
+  return r;
+}
 
-const formSubmissionsRoute = require("./routes/submission_form/formSubmissions");
-const announcements = require("./routes/membersbank/announcements");
-const documentsRoute = require("./routes/uploaddocument/uploaddocument");
+// Routes
+const optimizeRoutes = pickRouter(require("./routes/optimize"), "optimizeRoutes");
+const membersRoutes = pickRouter(require("./routes/members"), "membersRoutes");
+const newsRoutes = pickRouter(require("./routes/news"), "newsRoutes");
+const announcementRoutes = pickRouter(require("./routes/announcement"), "announcementRoutes");
+const jobsRoutes = pickRouter(require("./routes/jobs"), "jobsRoutes");
+const empLapnetRoutes = pickRouter(require("./routes/emp_lapnet"), "empLapnetRoutes");
+const notificationRoutes = pickRouter(require("./routes/notifications"), "notificationRoutes");
+const boarddirectorRoutes = pickRouter(require("./routes/boarddirector"), "boarddirectorRoutes");
+const visitorsRoutes = pickRouter(require("./routes/visitor/visitors"), "visitorsRoutes");
+const formTemplateRoutes = pickRouter(require("./routes/formtemplete"), "formTemplateRoutes");
+
+const userloginRoutes = pickRouter(require("./routes/login/users"), "userloginRoutes");
+const authRoutes = pickRouter(require("./routes/login/auth"), "authRoutes");
+
+const formSubmissionsRoute = pickRouter(
+  require("./routes/submission_form/formSubmissions"),
+  "formSubmissionsRoute"
+);
+
+const announcements = pickRouter(
+  require("./routes/membersbank/announcements"),
+  "announcements(memberbank)"
+);
+
+const documentsRoute = pickRouter(
+  require("./routes/uploaddocument/uploaddocument"),
+  "documentsRoute"
+);
 
 // ✅ CHAT ROUTE
-const chatRoute = require("./routes/chat/chat");
+const chatRoute = pickRouter(require("./routes/chat/chat"), "chatRoute");
 
 const app = express();
 
@@ -55,10 +81,7 @@ app.use((req, res, next) => {
     "Access-Control-Allow-Headers",
     "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-role, x-bankcode"
   );
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   next();
 });
 

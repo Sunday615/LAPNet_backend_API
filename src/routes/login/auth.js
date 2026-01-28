@@ -6,6 +6,14 @@ const pool = require("../../db/pool");
 
 const router = express.Router();
 
+async function getColumns(table) {
+  const [rows] = await pool.query(`SHOW COLUMNS FROM \`${table}\``);
+  return new Set(rows.map((r) => r.Field));
+}
+function hasCol(cols, name) {
+  return cols && cols.has(name);
+}
+
 router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body || {};
@@ -13,8 +21,19 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ message: "username และ password must use" });
     }
 
+    const cols = await getColumns("users");
+    const select = [
+      "id",
+      "username",
+      "password_hash",
+      "role",
+      "is_active",
+      hasCol(cols, "bankcode") ? "bankcode" : "NULL AS bankcode",
+      hasCol(cols, "member_id") ? "member_id" : "NULL AS member_id",
+    ];
+
     const [rows] = await pool.query(
-      `SELECT id, username, password_hash, role, is_active
+      `SELECT ${select.join(", ")}
        FROM users
        WHERE username = ?
        LIMIT 1`,
@@ -31,15 +50,26 @@ router.post("/login", async (req, res) => {
     const ok = await bcrypt.compare(String(password), user.password_hash);
     if (!ok) return res.status(401).json({ message: "Invalid username or password." });
 
-    const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role },
-      process.env.JWT_SECRET || "dev_secret",
-      { expiresIn: "7d" }
-    );
+    const payload = {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      bankcode: user.bankcode || null,
+      member_id: user.member_id || null,
+    };
+
+    const token = jwt.sign(payload, process.env.JWT_SECRET || "dev_secret", { expiresIn: "7d" });
 
     return res.json({
+      ok: true,
       token,
-      user: { id: user.id, username: user.username, role: user.role },
+      user: {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        bankcode: user.bankcode || null,
+        member_id: user.member_id || null,
+      },
     });
   } catch (err) {
     console.error("POST /api/auth/login error:", err);
