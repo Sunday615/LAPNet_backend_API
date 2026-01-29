@@ -115,9 +115,6 @@ function mapFileRow(r) {
 
 // =====================
 // POST /api/form-submissions
-// - multipart/form-data
-// - fields: templateId, sourceFormId?, submittedAt?, answers(JSON string), email?
-// - files: any fields (เช่น file_<questionId>)
 // =====================
 router.post("/", upload.any(), async (req, res) => {
   const conn = await pool.getConnection();
@@ -245,16 +242,7 @@ router.post("/", upload.any(), async (req, res) => {
 });
 
 // =====================
-// ✅ GET /api/form-submissions
-// query:
-// - templateId=xxx
-// - email=xxx
-// - limit=50 (default 50, max 200)
-// - offset=0
-//
-// return:
-// - ดึงครบ 2 ตาราง: form_submissions + form_submission_files
-// - items: [{...submission, files: [...], assetsFolder }]
+// GET /api/form-submissions
 // =====================
 router.get("/", async (req, res) => {
   let conn;
@@ -287,7 +275,6 @@ router.get("/", async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    // 1) ดึง submissions ก่อน (paginate ที่นี่)
     const sqlSubs = `
       SELECT s.*
       FROM form_submissions s
@@ -300,7 +287,6 @@ router.get("/", async (req, res) => {
     const submissions = subRows.map(mapSubmissionRow);
     const ids = submissions.map((s) => s.id);
 
-    // 2) ดึง files ของ submissions ทั้งหมดใน 1 query
     const filesBySubmissionId = new Map();
     if (ids.length) {
       const placeholders = ids.map(() => "?").join(",");
@@ -322,7 +308,6 @@ router.get("/", async (req, res) => {
       }
     }
 
-    // 3) แนบ files[] กลับไปในแต่ละ submission
     const items = submissions.map((s) => {
       const files = filesBySubmissionId.get(s.id) || [];
       return {
@@ -348,8 +333,7 @@ router.get("/", async (req, res) => {
 });
 
 // =====================
-// ✅ GET /api/form-submissions/:id
-// return: submission (ครบ) + files[] (ครบ)
+// GET /api/form-submissions/:id
 // =====================
 router.get("/:id", async (req, res) => {
   let conn;
@@ -361,7 +345,6 @@ router.get("/:id", async (req, res) => {
       return res.status(400).json({ ok: false, message: "Invalid id" });
     }
 
-    // ดึง submission แบบ s.* (ครบทุกคอลัมน์) แล้วค่อย map เป็น camelCase
     const [subRows] = await conn.execute(
       `
       SELECT s.*
@@ -538,6 +521,45 @@ router.patch("/:id", upload.any(), async (req, res) => {
     for (const f of req.files || []) await unlinkIfExists(f.path);
 
     return res.status(500).json({ ok: false, message: e?.message || "Server error" });
+  } finally {
+    conn.release();
+  }
+});
+
+// =====================
+// ✅ DELETE /api/form-submissions/:id
+// - delete submission + files rows + assets folder
+// =====================
+router.delete("/:id", async (req, res) => {
+  const conn = await pool.getConnection();
+  try {
+    const submissionId = Number(req.params.id);
+    if (!Number.isFinite(submissionId) || submissionId <= 0) {
+      return res.status(400).json({ ok: false, message: "Invalid id" });
+    }
+
+    const [chk] = await conn.execute(`SELECT id FROM form_submissions WHERE id = ? LIMIT 1`, [submissionId]);
+    if (!chk.length) {
+      return res.status(404).json({ ok: false, message: "Submission not found" });
+    }
+
+    await conn.beginTransaction();
+
+    await conn.execute(`DELETE FROM form_submission_files WHERE submission_id = ?`, [submissionId]);
+    await conn.execute(`DELETE FROM form_submissions WHERE id = ?`, [submissionId]);
+
+    await conn.commit();
+
+    // remove assets folder (best-effort)
+    const dir = path.join(ASSETS_ROOT, String(submissionId));
+    await rmDirSafe(dir);
+
+    return res.json({ ok: true, id: submissionId, deleted: true });
+  } catch (e) {
+    try {
+      await conn.rollback();
+    } catch {}
+    return res.status(500).json({ ok: false, message: e?.sqlMessage || e?.message || "Server error" });
   } finally {
     conn.release();
   }
