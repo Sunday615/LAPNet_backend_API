@@ -157,14 +157,14 @@ async function processPayloadImages({ payloadObj, sourceFormId }) {
       const src = String(img?.src || "");
       if (!src) continue;
 
-      // เฉพาะ base64 dataURL เท่านั้น
+ 
       if (!isDataUrlImage(src)) continue;
 
       const imgId = sanitizePathPart(img?.id || `${Date.now()}`);
       const dirAbs = path.join(UPLOAD_ROOT, String(sourceFormId), qid);
       await ensureDir(dirAbs);
 
-      // เขียนทับได้ (ถ้า id เดิม)
+    
       const fileName = `${imgId}.webp`;
       const outAbs = path.join(dirAbs, fileName);
 

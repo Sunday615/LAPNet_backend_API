@@ -18,7 +18,7 @@ router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body || {};
     if (!username || !password) {
-      return res.status(400).json({ message: "username และ password must use" });
+      return res.status(400).json({ message: "username ແລະ password must use" });
     }
 
     const cols = await getColumns("users");
