@@ -9,5 +9,3 @@ node_modules/
 *.log
 *.tmp
 
-# Ignore environment file
-.env
