@@ -27,6 +27,7 @@
     "geoip-lite": "^1.4.10",
     "i18n-iso-countries": "^7.14.0",
     "jsonwebtoken": "^9.0.3",
+    "jszip": "^3.10.1",
     "multer": "^2.0.2",
     "mysql2": "^3.16.0",
     "nanoid": "^5.1.6",
