@@ -89,11 +89,13 @@ const uploadFields = upload.fields([
   // bank logo aliases
   { name: "bankLogo", maxCount: 1 },
   { name: "bank_logo", maxCount: 1 },
+   { name: "banklogo", maxCount: 1 }, 
   { name: "logo", maxCount: 1 },
 
   // profile aliases
   { name: "profileImage", maxCount: 1 },
   { name: "profile_image", maxCount: 1 },
+  { name: "profileimage", maxCount: 1 },
   { name: "profile", maxCount: 1 },
   { name: "photo", maxCount: 1 },
   { name: "avatar", maxCount: 1 },
@@ -101,15 +103,18 @@ const uploadFields = upload.fields([
 
 function pickFiles(req) {
   const files = req.files || {};
+
   const bankLogoFile =
     files.bankLogo?.[0] ||
     files.bank_logo?.[0] ||
+    files.banklogo?.[0] ||   // ✅ ADD
     files.logo?.[0] ||
     null;
 
   const profileFile =
     files.profileImage?.[0] ||
     files.profile_image?.[0] ||
+    files.profileimage?.[0] || // ✅ ADD
     files.profile?.[0] ||
     files.photo?.[0] ||
     files.avatar?.[0] ||
@@ -117,6 +122,7 @@ function pickFiles(req) {
 
   return { bankLogoFile, profileFile };
 }
+
 
 // ---------- GET /api/boarddirector (list) ----------
 router.get("/", async (req, res, next) => {
