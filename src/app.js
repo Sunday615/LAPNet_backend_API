@@ -2,7 +2,13 @@
 const express = require("express");
 const cors = require("cors");
 
-const { corsMiddleware, corsOptions } = require("./config/cors");
+const {
+  corsMiddleware,
+  corsOptions,
+  ipAllowlistMiddleware,
+  hostAllowlistMiddleware,
+} = require("./config/cors");
+
 const { UPLOAD_DIR } = require("./config/paths");
 const logger = require("./middleware/logger");
 const { notFoundHandler, errorHandler } = require("./middleware/errors");
@@ -13,7 +19,7 @@ const pool = require("./db/pool");
 // Small helper: accept either `module.exports = router` OR `module.exports = { router }`
 // ----------------------
 function pickRouter(mod, name = "router") {
-  const r = (mod && mod.router) ? mod.router : mod;
+  const r = mod && mod.router ? mod.router : mod;
   if (typeof r !== "function") {
     const keys = mod && typeof mod === "object" ? Object.keys(mod) : [];
     throw new TypeError(
@@ -61,6 +67,7 @@ const app = express();
 // =====================
 // App / Proxy
 // =====================
+// NOTE: "true" trusts ALL proxies. Use a safer value (e.g. 1) if you know your proxy hops.
 app.set("trust proxy", true);
 app.disable("x-powered-by");
 
@@ -71,7 +78,14 @@ app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
 // =====================
-// CORS
+// ✅ IP + DOMAIN allowlist (server-side hard block)
+// Put this BEFORE CORS/static/routes so everything is protected
+// =====================
+app.use(ipAllowlistMiddleware);
+app.use(hostAllowlistMiddleware);
+
+// =====================
+// CORS (browser-side control)
 // =====================
 app.use(corsMiddleware);
 
@@ -103,6 +117,7 @@ app.use(
     etag: true,
     setHeaders(res) {
       res.setHeader("X-Content-Type-Options", "nosniff");
+      // Keep old behavior for static when wildcard is used
       if ((process.env.CORS_ORIGIN || "*").trim() === "*") {
         res.setHeader("Access-Control-Allow-Origin", "*");
       }
@@ -154,7 +169,7 @@ app.use("/api/announcements", announcements);
 app.use("/api/documents", documentsRoute);
 
 // =====================
-// ✅ CHAT (สำคัญ)
+// ✅ CHAT (important)
 // =====================
 app.use("/api/chat", chatRoute);
 /*
