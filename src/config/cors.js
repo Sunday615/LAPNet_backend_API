@@ -1,137 +1,88 @@
 // src/config/cors.js
-const cors = require("cors");
-const net = require("net");
 
-// ==============================
-// ✅ Strict allowlists (defaults)
-// ==============================
-const DEFAULT_ALLOWLIST_IPS =
-  "175.28.0.0/16,175.17.4.0/24,175.17.5.0/24";
-const DEFAULT_ALLOWLIST_DOMAINS =
-  "lapnet.com.la,test.lapnet.com.la";
+/**
+ * CORS middleware with safe defaults.
+ *
+ * - If CORS_ALLOW_ORIGINS is NOT set: allow all origins by reflecting the request Origin.
+ * - If CORS_ALLOW_ORIGINS IS set (comma-separated): only allow listed origins.
+ * - Supports credentialed requests by reflecting Origin + setting Access-Control-Allow-Credentials.
+ * - Handles preflight OPTIONS globally.
+ */
 
-// You can override via env if you want:
-// ALLOWLIST_IPS="175.28.0.0/16,175.17.4.0/24,175.17.5.0/24"
-// ALLOWLIST_DOMAINS="lapnet.com.la,test.lapnet.com.la"
-const ALLOWLIST_IPS = (process.env.ALLOWLIST_IPS || DEFAULT_ALLOWLIST_IPS)
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+const DEFAULT_ALLOW_HEADERS =
+  "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-role, x-bankcode";
 
-const ALLOWLIST_DOMAINS = (process.env.ALLOWLIST_DOMAINS || DEFAULT_ALLOWLIST_DOMAINS)
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+const DEFAULT_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
 
-const allowedDomainsSet = new Set(ALLOWLIST_DOMAINS);
-
-// ========================================
-// ✅ IPv4 CIDR match (no extra dependency)
-// ========================================
-function normalizeClientIp(ip) {
-  // Express may give: "::ffff:175.17.4.10"
-  if (typeof ip !== "string") return "";
-  const v = ip.trim();
-  if (v.startsWith("::ffff:")) return v.slice(7);
-  // If somehow "ip:port"
-  return v.split(":").slice(-1)[0];
+function parseAllowlist() {
+  const raw = String(process.env.CORS_ALLOW_ORIGINS || "").trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
 }
 
-function ipToInt(ipv4) {
-  const parts = ipv4.split(".");
-  if (parts.length !== 4) return null;
-  let n = 0;
-  for (const p of parts) {
-    const x = Number(p);
-    if (!Number.isInteger(x) || x < 0 || x > 255) return null;
-    n = (n << 8) + x;
+const ALLOWLIST = parseAllowlist();
+const ALLOW_ALL = ALLOWLIST.length === 0;
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (ALLOW_ALL) return true;
+  return ALLOWLIST.includes(origin);
+}
+
+function corsMiddleware(req, res, next) {
+  const origin = req.headers.origin;
+
+  // If browser sends Origin, reflect it (or block if allowlist is configured)
+  if (origin) {
+    if (!isOriginAllowed(origin)) {
+      // Keep this as JSON to make debugging easy from the browser
+      return res.status(403).json({
+        message: "CORS blocked",
+        origin,
+        allowlist: ALLOWLIST,
+        hint: "Set CORS_ALLOW_ORIGINS=comma,separated,origins or remove it to allow all (dev).",
+      });
+    }
+
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    // Credentialed requests require a non-wildcard origin
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin, Access-Control-Request-Headers, Access-Control-Request-Method");
+  } else {
+    // Non-browser clients (no Origin)
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
-  return n >>> 0;
+
+  const reqAllowHeaders = req.headers["access-control-request-headers"];
+  res.setHeader("Access-Control-Allow-Headers", reqAllowHeaders || DEFAULT_ALLOW_HEADERS);
+
+  const reqAllowMethod = req.headers["access-control-request-method"];
+  res.setHeader("Access-Control-Allow-Methods", reqAllowMethod ? `${reqAllowMethod}, OPTIONS` : DEFAULT_ALLOW_METHODS);
+
+  // Cache preflight for 1 day
+  res.setHeader("Access-Control-Max-Age", "86400");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  return next();
 }
 
-function cidrToRange(cidr) {
-  // "175.28.0.0/16"
-  const [ip, prefixStr] = cidr.split("/");
-  const prefix = Number(prefixStr);
-  if (!ip || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
-
-  if (net.isIP(ip) !== 4) return null;
-  const base = ipToInt(ip);
-  if (base === null) return null;
-
-  const mask = prefix === 0 ? 0 : ((0xffffffff << (32 - prefix)) >>> 0);
-  const network = (base & mask) >>> 0;
-  return { network, mask };
-}
-
-const allowRanges = ALLOWLIST_IPS.map(cidrToRange).filter(Boolean);
-
-function isAllowedIp(reqIp) {
-  const ip = normalizeClientIp(reqIp);
-  if (net.isIP(ip) !== 4) return false;
-
-  const val = ipToInt(ip);
-  if (val === null) return false;
-
-  return allowRanges.some(({ network, mask }) => ((val & mask) >>> 0) === network);
-}
-
-// =========================
-// ✅ Domain allowlist checks
-// =========================
-function isAllowedHostname(hostname) {
-  if (!hostname) return false;
-  const h = String(hostname).trim().toLowerCase();
-  return allowedDomainsSet.has(h);
-}
-
-// ===================================
-// ✅ Middleware: block by IP + domain
-// ===================================
+// ✅ Allow-all middlewares (temporary)
 function ipAllowlistMiddleware(req, res, next) {
-  // IMPORTANT: If behind nginx/ALB/Cloudflare, set:
-  // app.set("trust proxy", 1)  (or correct hop count)
-  // so req.ip is the real client IP.
-  if (isAllowedIp(req.ip)) return next();
-
-  return res.status(403).json({
-    message: "Forbidden",
-    reason: "IP not allowed",
-  });
+  return next();
 }
 
 function hostAllowlistMiddleware(req, res, next) {
-  // Express hostname comes from Host header (trusted if behind proper proxy)
-  if (isAllowedHostname(req.hostname)) return next();
-
-  return res.status(403).json({
-    message: "Forbidden",
-    reason: "Host/domain not allowed",
-  });
+  return next();
 }
 
-// ============================
-// ✅ CORS (browser-side control)
-// ============================
-const corsOptions = {
-  origin: (origin, cb) => {
-    // Non-browser clients may not send Origin; allow them IF they passed IP+Host checks.
-    if (!origin) return cb(null, true);
-
-    try {
-      const u = new URL(origin);
-      // Only allow exact hostnames in allowlist
-      if (isAllowedHostname(u.hostname)) return cb(null, true);
-      return cb(new Error("Not allowed by CORS"));
-    } catch {
-      return cb(new Error("Invalid Origin"));
-    }
-  },
-};
-
 module.exports = {
-  corsOptions,
-  corsMiddleware: cors(corsOptions),
   ipAllowlistMiddleware,
   hostAllowlistMiddleware,
+  corsMiddleware,
 };

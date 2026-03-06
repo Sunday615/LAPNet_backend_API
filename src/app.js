@@ -1,13 +1,7 @@
 // src/app.js
 const express = require("express");
-const cors = require("cors");
 
-const {
-  corsMiddleware,
-  corsOptions,
-  ipAllowlistMiddleware,
-  hostAllowlistMiddleware,
-} = require("./config/cors");
+const { ipAllowlistMiddleware, hostAllowlistMiddleware, corsMiddleware } = require("./config/cors");
 
 const { UPLOAD_DIR } = require("./config/paths");
 const logger = require("./middleware/logger");
@@ -49,15 +43,9 @@ const formSubmissionsRoute = pickRouter(
   "formSubmissionsRoute"
 );
 
-const announcements = pickRouter(
-  require("./routes/membersbank/announcements"),
-  "announcements(memberbank)"
-);
+const announcements = pickRouter(require("./routes/membersbank/announcements"), "announcements(memberbank)");
 
-const documentsRoute = pickRouter(
-  require("./routes/uploaddocument/uploaddocument"),
-  "documentsRoute"
-);
+const documentsRoute = pickRouter(require("./routes/uploaddocument/uploaddocument"), "documentsRoute");
 
 // ✅ CHAT ROUTE
 const chatRoute = pickRouter(require("./routes/chat/chat"), "chatRoute");
@@ -72,6 +60,12 @@ app.set("trust proxy", true);
 app.disable("x-powered-by");
 
 // =====================
+// CORS (global)
+// =====================
+// This must run early so errors/preflight still include CORS headers.
+app.use(corsMiddleware);
+
+// =====================
 // Body parsing
 // =====================
 app.use(express.json({ limit: "15mb" }));
@@ -79,28 +73,10 @@ app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
 // =====================
 // ✅ IP + DOMAIN allowlist (server-side hard block)
-// Put this BEFORE CORS/static/routes so everything is protected
+// Currently allow-all (middleware just next()) based on your config/cors.js
 // =====================
 app.use(ipAllowlistMiddleware);
 app.use(hostAllowlistMiddleware);
-
-// =====================
-// CORS (browser-side control)
-// =====================
-app.use(corsMiddleware);
-
-// ✅ allow custom headers (x-role / x-bankcode)
-app.use((req, res, next) => {
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization, x-role, x-bankcode"
-  );
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  next();
-});
-
-// allow preflight
-app.options(/.*/, cors(corsOptions));
 
 // =====================
 // Logger
@@ -117,10 +93,6 @@ app.use(
     etag: true,
     setHeaders(res) {
       res.setHeader("X-Content-Type-Options", "nosniff");
-      // Keep old behavior for static when wildcard is used
-      if ((process.env.CORS_ORIGIN || "*").trim() === "*") {
-        res.setHeader("Access-Control-Allow-Origin", "*");
-      }
     },
   })
 );
@@ -184,12 +156,48 @@ app.use("/api/chat", chatRoute);
 // =====================
 // Health + Root
 // =====================
-app.get("/health", async (_req, res) => {
+
+// Basic health: does NOT depend on DB
+app.get("/health", (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    status: "OK",
+    uptimeSec: Math.round(process.uptime()),
+    ts: new Date().toISOString(),
+  });
+});
+
+// DB health: checks DB connectivity
+app.get("/health/db", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
-    res.send("OK");
-  } catch {
-    res.status(500).send("DB ERROR");
+    return res.status(200).json({
+      ok: true,
+      db: true,
+      ts: new Date().toISOString(),
+    });
+  } catch (err) {
+    const isProd = String(process.env.NODE_ENV || "").toLowerCase() === "production";
+
+    console.error("[health/db] DB ERROR:", {
+      code: err && err.code,
+      message: err && err.message,
+      name: err && err.name,
+    });
+
+    return res.status(503).json({
+      ok: false,
+      db: false,
+      message: "DB ERROR",
+      ...(isProd
+        ? {}
+        : {
+            code: err && err.code,
+            error: err && err.message,
+            name: err && err.name,
+          }),
+      ts: new Date().toISOString(),
+    });
   }
 });
 
@@ -199,6 +207,7 @@ app.get("/", (_req, res) => {
     message: "API running",
     routes: [
       "/health",
+      "/health/db",
 
       "/api/chat/ping",
       "/api/chat/conversations/ensure",

@@ -1,12 +1,82 @@
 // src/routes/news.js
 const express = require("express");
+const path = require("path");
+const fs = require("fs/promises");
+const sharp = require("sharp");
+
 const pool = require("../db/pool");
 const { NEWS_TABLE } = require("../config/tables");
 const { upload } = require("../middleware/upload");
 const { deleteUploadRelSafe } = require("../utils/files");
-const { normalizeNewsRow, safeJson, safeJsonArray, parseJsonMaybe, pickFirst, normalize01 } = require("../utils/normalize");
+const {
+  normalizeNewsRow,
+  safeJson,
+  safeJsonArray,
+  parseJsonMaybe,
+  pickFirst,
+  normalize01,
+} = require("../utils/normalize");
 
 const router = express.Router();
+
+/**
+ * Project root assumption:
+ * - This file is in: src/routes/news.js
+ * - Upload folder is in: <projectRoot>/uploads/...
+ */
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+
+async function ensureDir(dirAbs) {
+  try {
+    await fs.mkdir(dirAbs, { recursive: true });
+  } catch (_) {}
+}
+
+function isWebpFilename(name) {
+  return String(name || "").toLowerCase().endsWith(".webp");
+}
+
+function replaceExtToWebp(filename) {
+  const base = String(filename || "").replace(/\.[^.]+$/, "");
+  return `${base}.webp`;
+}
+
+function relToAbs(rel) {
+  const clean = String(rel || "").replace(/^[\\/]+/, ""); // remove leading "/" or "\"
+  return path.join(PROJECT_ROOT, clean);
+}
+
+/**
+ * Convert uploaded file (multer disk file) to .webp and return new relative url.
+ * - Keeps the same folder.
+ * - Deletes the original uploaded file after successful conversion.
+ */
+async function convertUploadToWebp(file, relOld, relNew) {
+  if (!file) return { relFinal: relOld, converted: false };
+
+  // If already .webp by name, keep it (still safe)
+  if (isWebpFilename(file.filename) || isWebpFilename(relOld)) {
+    return { relFinal: relOld, converted: false };
+  }
+
+  const absNew = relToAbs(relNew);
+  const absNewDir = path.dirname(absNew);
+  await ensureDir(absNewDir);
+
+  // multer diskStorage typically provides file.path
+  const srcAbs = file.path ? path.resolve(file.path) : relToAbs(relOld);
+
+  // Convert -> write .webp
+  await sharp(srcAbs)
+    .rotate() // keep orientation
+    .webp({ quality: 82 })
+    .toFile(absNew);
+
+  // Remove original file safely
+  await deleteUploadRelSafe(relOld);
+
+  return { relFinal: relNew, converted: true };
+}
 
 const uploadNews = upload.fields([
   { name: "hero_img", maxCount: 1 },
@@ -16,6 +86,9 @@ const uploadNews = upload.fields([
 
 // POST /api/news  (alias /api/news/insert)
 router.post(["/insert", "/"], uploadNews, async (req, res) => {
+  // Track newly-created files for cleanup on error
+  const createdRels = [];
+
   try {
     const { header_news, category, date_time, sub_header = "", tags = "[]", description_news } = req.body || {};
 
@@ -29,8 +102,26 @@ router.post(["/insert", "/"], uploadNews, async (req, res) => {
 
     const galleryFiles = [...(req.files?.["gallery_files[]"] || []), ...(req.files?.["gallery_files"] || [])];
 
-    const heroUrl = `/uploads/news/${heroFile.filename}`;
-    const galleryUrls = galleryFiles.map((f) => `/uploads/news/gallery/${f.filename}`);
+    // Build original rel paths (as your system expects)
+    const heroRelOld = `/uploads/news/${heroFile.filename}`;
+    const heroWebpName = replaceExtToWebp(heroFile.filename);
+    const heroRelNew = `/uploads/news/${heroWebpName}`;
+
+    // Convert hero -> webp
+    const heroConv = await convertUploadToWebp(heroFile, heroRelOld, heroRelNew);
+    const heroUrl = heroConv.relFinal;
+    createdRels.push(heroUrl);
+
+    // Gallery convert -> webp
+    const galleryUrls = [];
+    for (const f of galleryFiles) {
+      const relOld = `/uploads/news/gallery/${f.filename}`;
+      const relNew = `/uploads/news/gallery/${replaceExtToWebp(f.filename)}`;
+
+      const conv = await convertUploadToWebp(f, relOld, relNew);
+      galleryUrls.push(conv.relFinal);
+      createdRels.push(conv.relFinal);
+    }
 
     const tagsArr = safeJson(tags, []);
     const tagsFinal = Array.isArray(tagsArr) ? tagsArr : [];
@@ -73,6 +164,12 @@ router.post(["/insert", "/"], uploadNews, async (req, res) => {
     });
   } catch (err) {
     console.error("INSERT NEWS ERROR:", err);
+
+    // Cleanup any files created by conversion
+    for (const rel of createdRels) {
+      await deleteUploadRelSafe(rel);
+    }
+
     res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
   }
 });
@@ -108,6 +205,10 @@ router.get("/:id", async (req, res) => {
 router.patch("/:id", uploadNews, async (req, res) => {
   let newHeroRel = "";
   let newGalleryRels = [];
+
+  // Track conversion outputs for cleanup on error
+  const createdRels = [];
+
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
@@ -161,8 +262,14 @@ router.patch("/:id", uploadNews, async (req, res) => {
     let heroFinal = oldHeroRel;
 
     if (heroFile) {
-      newHeroRel = `/uploads/news/${heroFile.filename}`;
-      heroFinal = newHeroRel;
+      const heroRelOld = `/uploads/news/${heroFile.filename}`;
+      const heroRelNewCandidate = `/uploads/news/${replaceExtToWebp(heroFile.filename)}`;
+
+      const conv = await convertUploadToWebp(heroFile, heroRelOld, heroRelNewCandidate);
+      newHeroRel = conv.relFinal; // for old deletion logic below
+      heroFinal = conv.relFinal;
+
+      createdRels.push(conv.relFinal);
     } else if (heroRemove === 1) {
       heroFinal = null;
     } else if (req.body?.keep_hero_img !== undefined) {
@@ -173,7 +280,16 @@ router.patch("/:id", uploadNews, async (req, res) => {
     if (!heroFinal) return res.status(400).json({ ok: false, message: "hero_img is required (cannot be empty)" });
 
     const galleryFiles = [...(req.files?.["gallery_files[]"] || []), ...(req.files?.["gallery_files"] || [])];
-    newGalleryRels = galleryFiles.map((f) => `/uploads/news/gallery/${f.filename}`);
+
+    newGalleryRels = [];
+    for (const f of galleryFiles) {
+      const relOld = `/uploads/news/gallery/${f.filename}`;
+      const relNew = `/uploads/news/gallery/${replaceExtToWebp(f.filename)}`;
+      const conv = await convertUploadToWebp(f, relOld, relNew);
+
+      newGalleryRels.push(conv.relFinal);
+      createdRels.push(conv.relFinal);
+    }
 
     let keepGallery = null;
     if (req.body?.keep_gallery !== undefined) {
@@ -215,9 +331,11 @@ router.patch("/:id", uploadNews, async (req, res) => {
     const [result] = await pool.execute(sql, params);
     if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
 
+    // Delete old hero if replaced/removed
     if (newHeroRel && oldHeroRel && oldHeroRel !== newHeroRel) await deleteUploadRelSafe(oldHeroRel);
     if (!heroFinal && oldHeroRel) await deleteUploadRelSafe(oldHeroRel);
 
+    // Delete removed gallery files (only if client provided keep list or uploaded new items)
     if (keepGallery !== null || newGalleryRels.length) {
       const removed = (Array.isArray(oldGallery) ? oldGallery : []).filter((rel) => !galleryFinal.includes(rel));
       for (const rel of removed) await deleteUploadRelSafe(rel);
@@ -228,9 +346,9 @@ router.patch("/:id", uploadNews, async (req, res) => {
   } catch (err) {
     console.error("PATCH NEWS ERROR:", err);
 
-    if (newHeroRel) await deleteUploadRelSafe(newHeroRel);
-    if (Array.isArray(newGalleryRels) && newGalleryRels.length) {
-      for (const rel of newGalleryRels) await deleteUploadRelSafe(rel);
+    // Cleanup any converted files created in this request
+    for (const rel of createdRels) {
+      await deleteUploadRelSafe(rel);
     }
 
     res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
