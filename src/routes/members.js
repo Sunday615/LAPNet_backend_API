@@ -1,6 +1,6 @@
-// src/routes/members.js
-const express = require("express");
 const fs = require("fs");
+const path = require("path");
+const express = require("express");
 const fsp = fs.promises;
 
 const pool = require("../db/pool");
@@ -19,16 +19,6 @@ const { convertDiskImageToWebpOrThrow } = require("../services/sharp");
 
 const router = express.Router();
 
-/**
- * ✅ Product option labels (must match what you store in items)
- * Mapping:
- *  - productOptionsATM[0] => atminquery
- *  - productOptionsATM[1] => atmcashwithdraw
- *  - productOptionsATM[2] => atmtransfer
- *  - productOptionsMBbaking[0] or [1] => mobiletransfer
- *  - productOptionsMBbaking[2] => qrpayment
- *  - any crossborder item => crossborderproduct
- */
 const OPT_ATM_INQUERY = "ກວດສອບຍອດເງິນຂ້າມທະນາຄານຜ່ານຕູ້ ATM";
 const OPT_ATM_CASHWITHDRAW = "ຖອນເງິນສົດຂ້າມທະນາຄານຜ່ານຕູ້ ATM";
 const OPT_ATM_TRANSFER = "ໂອນເງິນຂ້າມທະນາຄານຜ່ານຕູ້ ATM";
@@ -37,51 +27,88 @@ const OPT_MOBILE_TRANSFER_ACC = "ໂອນເງິນຂ້າມທະນາ�
 const OPT_MOBILE_TRANSFER_QR = "ໂອນເງິນຂ້າມທະນາຄານຜ່ານ QR CODE";
 const OPT_QR_PAYMENT = "ຊຳລະຄ່າສິນຄ້າ ແລະ ບໍລິການ ໂດຍສະແກນ QR CODE";
 
-/* -----------------------------
-  ✅ NEW: tinyint(1) parser (for fintech and similar flags)
------------------------------ */
-function toTinyInt(v, def = 0) {
-  if (v === undefined || v === null || v === "") return def;
-  if (typeof v === "boolean") return v ? 1 : 0;
-  if (typeof v === "number") return v ? 1 : 0;
-  const s = String(v).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(s)) return 1;
-  if (["0", "false", "no", "off"].includes(s)) return 0;
-  return def;
+function createHttpError(statusCode, message, extra = {}) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  Object.assign(err, extra);
+  return err;
 }
 
-function computeProductFlags(CardATM, Mbbankking, Crossborder) {
-  const atmItems = Array.isArray(CardATM?.items) ? CardATM.items : [];
-  const mobileItems = Array.isArray(Mbbankking?.items) ? Mbbankking.items : [];
-  const crossItems = Array.isArray(Crossborder?.items) ? Crossborder.items : [];
-
-  const atminquery = atmItems.includes(OPT_ATM_INQUERY) ? 1 : 0;
-  const atmcashwithdraw = atmItems.includes(OPT_ATM_CASHWITHDRAW) ? 1 : 0;
-  const atmtransfer = atmItems.includes(OPT_ATM_TRANSFER) ? 1 : 0;
-
-  const mobiletransfer =
-    mobileItems.includes(OPT_MOBILE_TRANSFER_ACC) || mobileItems.includes(OPT_MOBILE_TRANSFER_QR) ? 1 : 0;
-
-  const qrpayment = mobileItems.includes(OPT_QR_PAYMENT) ? 1 : 0;
-
-  const crossborderproduct = crossItems.length > 0 ? 1 : 0;
-
-  return { atminquery, atmcashwithdraw, atmtransfer, mobiletransfer, qrpayment, crossborderproduct };
+function parsePositiveInt(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-// POST /api/members
-router.post("/", upload.single("image"), async (req, res) => {
+function toTinyInt(value, defaultValue = 0) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "number") return value ? 1 : 0;
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return 1;
+  if (["0", "false", "no", "off"].includes(normalized)) return 0;
+
+  return defaultValue;
+}
+
+function validateRequiredHttpUrl(value, fieldName) {
+  const url = String(value || "").trim();
+  if (!url) {
+    throw createHttpError(400, `${fieldName} is required`);
+  }
+  if (!isValidUrl(url)) {
+    throw createHttpError(400, `${fieldName} must be URL (http/https)`);
+  }
+  return url;
+}
+
+function computeProductFlags(cardATM, mobileBanking, crossborder) {
+  const atmItems = Array.isArray(cardATM?.items) ? cardATM.items : [];
+  const mobileItems = Array.isArray(mobileBanking?.items) ? mobileBanking.items : [];
+  const crossItems = Array.isArray(crossborder?.items) ? crossborder.items : [];
+
+  return {
+    atminquery: atmItems.includes(OPT_ATM_INQUERY) ? 1 : 0,
+    atmcashwithdraw: atmItems.includes(OPT_ATM_CASHWITHDRAW) ? 1 : 0,
+    atmtransfer: atmItems.includes(OPT_ATM_TRANSFER) ? 1 : 0,
+    mobiletransfer:
+      mobileItems.includes(OPT_MOBILE_TRANSFER_ACC) || mobileItems.includes(OPT_MOBILE_TRANSFER_QR) ? 1 : 0,
+    qrpayment: mobileItems.includes(OPT_QR_PAYMENT) ? 1 : 0,
+    crossborderproduct: crossItems.length > 0 ? 1 : 0,
+  };
+}
+
+function getStoredFintechValue(row) {
+  return row?.fintech ?? row?.Fintech ?? row?.FINTECH;
+}
+
+async function cleanupUploadedFile(uploadedDiskPath) {
+  if (uploadedDiskPath) {
+    await fsp.unlink(uploadedDiskPath).catch(() => {});
+  }
+}
+
+router.post("/", upload.single("image"), async (req, res, next) => {
   let uploadedDiskPath = "";
-  try {
-    const { bankcode, title, subtitle, link1, link2, gradA, gradB } = req.body;
+  let imageUrlForCleanup = "";
 
-    // ✅ NEW: fintech tinyint(1) default 0
+  try {
+    const { bankcode, title, subtitle, link1, link2, gradA, gradB } = req.body || {};
     const fintech = toTinyInt(req.body?.fintech ?? req.body?.Fintech, 0);
 
-    if (!bankcode?.trim()) return res.status(400).json({ ok: false, message: "bankcode is required" });
-    if (!title?.trim()) return res.status(400).json({ ok: false, message: "title is required" });
-    if (!isValidUrl(link1)) return res.status(400).json({ ok: false, message: "link1 must be URL (http/https)" });
-    if (!isValidUrl(link2)) return res.status(400).json({ ok: false, message: "link2 must be URL (http/https)" });
+    const bankcodeValue = String(bankcode || "").trim();
+    const titleValue = String(title || "").trim();
+    const subtitleValue = String(subtitle || "").trim();
+
+    if (!bankcodeValue) {
+      throw createHttpError(400, "bankcode is required");
+    }
+    if (!titleValue) {
+      throw createHttpError(400, "title is required");
+    }
+
+    const link1Value = validateRequiredHttpUrl(link1, "link1");
+    const link2Value = validateRequiredHttpUrl(link2, "link2");
 
     const productOptionsATM = parseFormArrayFromBody(req.body, "productOptionsATM");
     const hasProductOptionsATM = productOptionsATM.length > 0;
@@ -93,37 +120,40 @@ router.post("/", upload.single("image"), async (req, res) => {
       req.body?.Crossborder !== undefined ||
       hasProductOptionsATM;
 
-    let CardATM = { items: [] };
-    let Mbbankking = { items: [] };
-    let Crossborder = { items: [] };
+    let cardATM = { items: [] };
+    let mobileBanking = { items: [] };
+    let crossborder = { items: [] };
 
     if (hasExplicitItems) {
-      if (req.body.CardATM !== undefined) CardATM = parseItemsObj(req.body.CardATM, []);
-      else if (hasProductOptionsATM) CardATM = parseItemsObj(productOptionsATM, []);
-      else CardATM = { items: [] };
+      if (req.body.CardATM !== undefined) {
+        cardATM = parseItemsObj(req.body.CardATM, []);
+      } else if (hasProductOptionsATM) {
+        cardATM = parseItemsObj(productOptionsATM, []);
+      }
 
-      Mbbankking = parseItemsObj(req.body.Mbbankking ?? req.body.Mbbanking, []);
-      Crossborder = parseItemsObj(req.body.Crossborder, []);
+      mobileBanking = parseItemsObj(req.body.Mbbankking ?? req.body.Mbbanking, []);
+      crossborder = parseItemsObj(req.body.Crossborder, []);
     } else {
-      const fp = safeJson(req.body?.filterproduct, []);
-      if (!Array.isArray(fp)) return res.status(400).json({ ok: false, message: "filterproduct must be JSON array" });
+      const filterProduct = safeJson(req.body?.filterproduct, []);
+      if (!Array.isArray(filterProduct)) {
+        throw createHttpError(400, "filterproduct must be JSON array");
+      }
 
-      const classified = classifyProductsFromFilterproduct(fp);
-      CardATM = classified.CardATM;
-      Mbbankking = classified.Mbbankking;
-      Crossborder = classified.Crossborder;
+      const classified = classifyProductsFromFilterproduct(filterProduct);
+      cardATM = classified.CardATM;
+      mobileBanking = classified.Mbbankking;
+      crossborder = classified.Crossborder;
     }
 
-    const memberATM = CardATM.items.length > 0 ? 1 : 0;
-    const membermobile = Mbbankking.items.length > 0 ? 1 : 0;
-    const membercrossborder = Crossborder.items.length > 0 ? 1 : 0;
+    const memberATM = cardATM.items.length > 0 ? 1 : 0;
+    const membermobile = mobileBanking.items.length > 0 ? 1 : 0;
+    const membercrossborder = crossborder.items.length > 0 ? 1 : 0;
 
-    // ✅ NEW: compute tinyint flags from selected items
-    const productFlags = computeProductFlags(CardATM, Mbbankking, Crossborder);
+    const productFlags = computeProductFlags(cardATM, mobileBanking, crossborder);
 
-    const Color = {
-      primary: (gradA || "").trim() || "#38bdf8",
-      secondary: (gradB || "").trim() || "#6366f1",
+    const color = {
+      primary: String(gradA || "").trim() || "#38bdf8",
+      secondary: String(gradB || "").trim() || "#6366f1",
     };
 
     let imageUrl = "";
@@ -131,9 +161,10 @@ router.post("/", upload.single("image"), async (req, res) => {
     if (req.file) {
       uploadedDiskPath = req.file.path;
       const outPath = await convertDiskImageToWebpOrThrow(uploadedDiskPath, 82, 1024);
-      const outFile = require("path").basename(outPath);
+      const outFile = path.basename(outPath);
 
       imageUrl = `/uploads/members/${outFile}`;
+      imageUrlForCleanup = imageUrl;
       uploadedDiskPath = outPath;
     }
 
@@ -160,118 +191,174 @@ router.post("/", upload.single("image"), async (req, res) => {
     `;
 
     const params = [
-      bankcode.trim(),
-      title.trim(),
-      (subtitle || "").trim(),
-      JSON.stringify(Color),
-      (link1 || "").trim(),
-      (link2 || "").trim(),
-      JSON.stringify(parseItemsObj(CardATM, [])),
-      JSON.stringify(parseItemsObj(Mbbankking, [])),
-      JSON.stringify(parseItemsObj(Crossborder, [])),
+      bankcodeValue,
+      titleValue,
+      subtitleValue,
+      JSON.stringify(color),
+      link1Value,
+      link2Value,
+      JSON.stringify(parseItemsObj(cardATM, [])),
+      JSON.stringify(parseItemsObj(mobileBanking, [])),
+      JSON.stringify(parseItemsObj(crossborder, [])),
       memberATM,
       membermobile,
       membercrossborder,
-
-      // ✅ NEW FLAGS
       productFlags.atminquery,
       productFlags.atmcashwithdraw,
       productFlags.atmtransfer,
       productFlags.mobiletransfer,
       productFlags.qrpayment,
       productFlags.crossborderproduct,
-
-      // ✅ NEW: fintech
       fintech,
-
       imageUrl,
     ];
 
     const [result] = await pool.execute(sql, params);
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
       idmember: result.insertId,
       fintech,
       image: imageUrl,
       image_url: absUrl(req, imageUrl),
-      flags: { memberATM, membermobile, membercrossborder, ...productFlags, fintech },
+      flags: {
+        memberATM,
+        membermobile,
+        membercrossborder,
+        ...productFlags,
+        fintech,
+      },
       items: {
-        CardATM: parseItemsObj(CardATM, []),
-        Mbbankking: parseItemsObj(Mbbankking, []),
-        Crossborder: parseItemsObj(Crossborder, []),
+        CardATM: parseItemsObj(cardATM, []),
+        Mbbankking: parseItemsObj(mobileBanking, []),
+        Crossborder: parseItemsObj(crossborder, []),
       },
     });
   } catch (err) {
-    console.error("INSERT MEMBER ERROR:", err);
-    if (uploadedDiskPath) await fsp.unlink(uploadedDiskPath).catch(() => {});
-    const status = err?.statusCode || 500;
-    res.status(status).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("INSERT MEMBER ERROR:", {
+      code: err?.code,
+      message: err?.message,
+    });
+
+    await cleanupUploadedFile(uploadedDiskPath);
+    if (imageUrlForCleanup) {
+      await deleteUploadRelSafe(imageUrlForCleanup).catch(() => {});
+    }
+    return next(err);
   }
 });
 
-// GET /api/members
-router.get("/", async (req, res) => {
+router.get("/", async (req, res, next) => {
   try {
     const [rows] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} ORDER BY idmember DESC`);
-    res.json({
+    return res.json({
       ok: true,
-      data: rows.map((r) => {
-        const n = normalizeMemberRow(req, r);
-        const raw = r?.fintech ?? r?.Fintech ?? r?.FINTECH;
-        return { ...n, fintech: toTinyInt(raw, 0) };
+      data: rows.map((row) => {
+        const normalized = normalizeMemberRow(req, row);
+        return { ...normalized, fintech: toTinyInt(getStoredFintechValue(row), 0) };
       }),
     });
   } catch (err) {
-    console.error("GET MEMBERS ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("GET MEMBERS ERROR:", {
+      code: err?.code,
+      message: err?.message,
+    });
+    return next(err);
   }
 });
 
-// GET /api/members/:id
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
-    const n = normalizeMemberRow(req, rows[0]);
-    const raw = rows[0]?.fintech ?? rows[0]?.Fintech ?? rows[0]?.FINTECH;
-
-    res.json({ ok: true, data: { ...n, fintech: toTinyInt(raw, 0) } });
+    const normalized = normalizeMemberRow(req, rows[0]);
+    return res.json({
+      ok: true,
+      data: {
+        ...normalized,
+        fintech: toTinyInt(getStoredFintechValue(rows[0]), 0),
+      },
+    });
   } catch (err) {
-    console.error("GET MEMBER BY ID ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("GET MEMBER BY ID ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+    return next(err);
   }
 });
 
-// PATCH /api/members/:id (multipart + optional image + delete old)
-router.patch("/:id", upload.single("image"), async (req, res) => {
+router.patch("/:id", upload.single("image"), async (req, res, next) => {
   let uploadedDiskPath = "";
+  let newImageUrl = "";
+
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
     const oldRow = rows[0];
-    const oldImageRel = oldRow?.image || "";
+    const oldImageRel = String(oldRow?.image || "").trim();
 
-    const bankcodeRaw = req.body?.bankcode;
-    const titleRaw = req.body?.title;
-    const subtitleRaw = req.body?.subtitle;
-    const link1Raw = req.body?.link1;
-    const link2Raw = req.body?.link2;
-    const gradARaw = req.body?.gradA;
-    const gradBRaw = req.body?.gradB;
+    const bankcode =
+      req.body?.bankcode !== undefined ? String(req.body.bankcode || "").trim() : String(oldRow.Bankcode || "").trim();
 
-    // ✅ NEW: fintech
-    const fintechRaw = req.body?.fintech ?? req.body?.Fintech;
+    const title =
+      req.body?.title !== undefined ? String(req.body.title || "").trim() : String(oldRow.BanknameLA || "").trim();
 
-    const filterproductRaw = req.body?.filterproduct;
+    const subtitle =
+      req.body?.subtitle !== undefined
+        ? String(req.body.subtitle || "").trim()
+        : String(oldRow.BanknameEN || "").trim();
+
+    if (!bankcode) {
+      throw createHttpError(400, "bankcode is required");
+    }
+    if (!title) {
+      throw createHttpError(400, "title is required");
+    }
+
+    const link1 =
+      req.body?.link1 !== undefined
+        ? validateRequiredHttpUrl(req.body.link1, "link1")
+        : validateRequiredHttpUrl(oldRow.LinkFB, "link1");
+
+    const link2 =
+      req.body?.link2 !== undefined
+        ? validateRequiredHttpUrl(req.body.link2, "link2")
+        : validateRequiredHttpUrl(oldRow.LinkWeb, "link2");
+
+    const oldColor = require("../utils/json").parseJsonMaybe(oldRow.Color, oldRow.Color) || {};
+    const color = {
+      primary:
+        req.body?.gradA !== undefined
+          ? String(req.body.gradA || "").trim() || oldColor.primary || "#38bdf8"
+          : oldColor.primary || "#38bdf8",
+      secondary:
+        req.body?.gradB !== undefined
+          ? String(req.body.gradB || "").trim() || oldColor.secondary || "#6366f1"
+          : oldColor.secondary || "#6366f1",
+    };
+
+    const fintech =
+      req.body?.fintech !== undefined || req.body?.Fintech !== undefined
+        ? toTinyInt(req.body?.fintech ?? req.body?.Fintech, 0)
+        : toTinyInt(getStoredFintechValue(oldRow), 0);
 
     const productOptionsATM = parseFormArrayFromBody(req.body, "productOptionsATM");
     const hasProductOptionsATM = productOptionsATM.length > 0;
@@ -283,77 +370,51 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
       req.body?.Crossborder !== undefined ||
       hasProductOptionsATM;
 
-    const bankcode =
-      bankcodeRaw !== undefined ? String(bankcodeRaw || "").trim() : String(oldRow.Bankcode || "").trim();
-    const title = titleRaw !== undefined ? String(titleRaw || "").trim() : String(oldRow.BanknameLA || "").trim();
-    const subtitle =
-      subtitleRaw !== undefined ? String(subtitleRaw || "").trim() : String(oldRow.BanknameEN || "").trim();
-
-    const link1 = link1Raw !== undefined ? String(link1Raw || "").trim() : String(oldRow.LinkFB || "").trim();
-    const link2 = link2Raw !== undefined ? String(link2Raw || "").trim() : String(oldRow.LinkWeb || "").trim();
-
-    if (!bankcode) return res.status(400).json({ ok: false, message: "bankcode is required" });
-    if (!title) return res.status(400).json({ ok: false, message: "title is required" });
-    if (!isValidUrl(link1)) return res.status(400).json({ ok: false, message: "link1 must be URL (http/https)" });
-    if (!isValidUrl(link2)) return res.status(400).json({ ok: false, message: "link2 must be URL (http/https)" });
-
-    const oldColor = require("../utils/json").parseJsonMaybe(oldRow.Color, oldRow.Color) || {};
-    const Color = {
-      primary:
-        gradARaw !== undefined
-          ? String(gradARaw || "").trim() || oldColor.primary || "#38bdf8"
-          : oldColor.primary || "#38bdf8",
-      secondary:
-        gradBRaw !== undefined
-          ? String(gradBRaw || "").trim() || oldColor.secondary || "#6366f1"
-          : oldColor.secondary || "#6366f1",
-    };
-
-    // ✅ NEW: fintech keep old if not provided
-    const fintech =
-      fintechRaw !== undefined
-        ? toTinyInt(fintechRaw, 0)
-        : toTinyInt(oldRow?.fintech ?? oldRow?.Fintech ?? oldRow?.FINTECH, 0);
-
-    let CardATM = parseItemsObj(oldRow.CardATM, []);
-    let Mbbankking = parseItemsObj(oldRow.Mbbankking, []);
-    let Crossborder = parseItemsObj(oldRow.Crossborder, []);
+    let cardATM = parseItemsObj(oldRow.CardATM, []);
+    let mobileBanking = parseItemsObj(oldRow.Mbbankking, []);
+    let crossborder = parseItemsObj(oldRow.Crossborder, []);
 
     if (hasExplicitItems) {
-      if (req.body?.CardATM !== undefined) CardATM = parseItemsObj(req.body.CardATM, CardATM.items);
-      else if (hasProductOptionsATM) CardATM = parseItemsObj(productOptionsATM, CardATM.items);
+      if (req.body?.CardATM !== undefined) {
+        cardATM = parseItemsObj(req.body.CardATM, cardATM.items);
+      } else if (hasProductOptionsATM) {
+        cardATM = parseItemsObj(productOptionsATM, cardATM.items);
+      }
 
       if (req.body?.Mbbankking !== undefined || req.body?.Mbbanking !== undefined) {
-        Mbbankking = parseItemsObj(req.body.Mbbankking ?? req.body.Mbbanking, Mbbankking.items);
+        mobileBanking = parseItemsObj(req.body.Mbbankking ?? req.body.Mbbanking, mobileBanking.items);
       }
-      if (req.body?.Crossborder !== undefined) {
-        Crossborder = parseItemsObj(req.body.Crossborder, Crossborder.items);
-      }
-    } else if (filterproductRaw !== undefined) {
-      const fp = safeJson(filterproductRaw, []);
-      if (!Array.isArray(fp)) return res.status(400).json({ ok: false, message: "filterproduct must be JSON array" });
 
-      const classified = classifyProductsFromFilterproduct(fp);
-      CardATM = parseItemsObj(classified.CardATM, []);
-      Mbbankking = parseItemsObj(classified.Mbbankking, []);
-      Crossborder = parseItemsObj(classified.Crossborder, []);
+      if (req.body?.Crossborder !== undefined) {
+        crossborder = parseItemsObj(req.body.Crossborder, crossborder.items);
+      }
+    } else if (req.body?.filterproduct !== undefined) {
+      const filterProduct = safeJson(req.body.filterproduct, []);
+      if (!Array.isArray(filterProduct)) {
+        throw createHttpError(400, "filterproduct must be JSON array");
+      }
+
+      const classified = classifyProductsFromFilterproduct(filterProduct);
+      cardATM = parseItemsObj(classified.CardATM, []);
+      mobileBanking = parseItemsObj(classified.Mbbankking, []);
+      crossborder = parseItemsObj(classified.Crossborder, []);
     }
 
-    const memberATM = CardATM?.items?.length ? 1 : 0;
-    const membermobile = Mbbankking?.items?.length ? 1 : 0;
-    const membercrossborder = Crossborder?.items?.length ? 1 : 0;
+    const memberATM = cardATM?.items?.length ? 1 : 0;
+    const membermobile = mobileBanking?.items?.length ? 1 : 0;
+    const membercrossborder = crossborder?.items?.length ? 1 : 0;
 
-    // ✅ NEW: recompute tinyint flags from updated items
-    const productFlags = computeProductFlags(CardATM, Mbbankking, Crossborder);
+    const productFlags = computeProductFlags(cardATM, mobileBanking, crossborder);
 
     let imageUrl = oldImageRel || "";
 
     if (req.file) {
       uploadedDiskPath = req.file.path;
       const outPath = await convertDiskImageToWebpOrThrow(uploadedDiskPath, 82, 1024);
-      const outFile = require("path").basename(outPath);
+      const outFile = path.basename(outPath);
 
       imageUrl = `/uploads/members/${outFile}`;
+      newImageUrl = imageUrl;
       uploadedDiskPath = outPath;
     }
 
@@ -387,71 +448,90 @@ router.patch("/:id", upload.single("image"), async (req, res) => {
       bankcode,
       title,
       subtitle,
-      JSON.stringify(Color),
+      JSON.stringify(color),
       link1,
       link2,
-      JSON.stringify(parseItemsObj(CardATM, [])),
-      JSON.stringify(parseItemsObj(Mbbankking, [])),
-      JSON.stringify(parseItemsObj(Crossborder, [])),
+      JSON.stringify(parseItemsObj(cardATM, [])),
+      JSON.stringify(parseItemsObj(mobileBanking, [])),
+      JSON.stringify(parseItemsObj(crossborder, [])),
       memberATM,
       membermobile,
       membercrossborder,
-
-      // ✅ NEW FLAGS
       productFlags.atminquery,
       productFlags.atmcashwithdraw,
       productFlags.atmtransfer,
       productFlags.mobiletransfer,
       productFlags.qrpayment,
       productFlags.crossborderproduct,
-
-      // ✅ NEW: fintech
       fintech,
-
       imageUrl,
       id,
     ];
 
     const [result] = await pool.execute(sql, params);
-    if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
-
-    if (req.file && oldImageRel && oldImageRel !== imageUrl) {
-      await deleteUploadRelSafe(oldImageRel);
+    if (result.affectedRows === 0) {
+      throw createHttpError(404, "Not found");
     }
 
-    const [rows2] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
-    const n = normalizeMemberRow(req, rows2[0]);
-    const raw = rows2[0]?.fintech ?? rows2[0]?.Fintech ?? rows2[0]?.FINTECH;
+    if (req.file && oldImageRel && oldImageRel !== imageUrl) {
+      await deleteUploadRelSafe(oldImageRel).catch(() => {});
+    }
 
-    res.json({ ok: true, message: "Updated", data: { ...n, fintech: toTinyInt(raw, 0) } });
+    const [updatedRows] = await pool.query(`SELECT * FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
+    const normalized = normalizeMemberRow(req, updatedRows[0]);
+
+    return res.json({
+      ok: true,
+      message: "Updated",
+      data: {
+        ...normalized,
+        fintech: toTinyInt(getStoredFintechValue(updatedRows[0]), 0),
+      },
+    });
   } catch (err) {
-    console.error("PATCH MEMBER ERROR:", err);
-    if (uploadedDiskPath) await fsp.unlink(uploadedDiskPath).catch(() => {});
-    const status = err?.statusCode || 500;
-    res.status(status).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("PATCH MEMBER ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+
+    await cleanupUploadedFile(uploadedDiskPath);
+    if (newImageUrl) {
+      await deleteUploadRelSafe(newImageUrl).catch(() => {});
+    }
+    return next(err);
   }
 });
 
-// DELETE /api/members/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(`SELECT image FROM ${MEMBERS_TABLE} WHERE idmember = ? LIMIT 1`, [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
     const imageRel = rows[0]?.image || "";
-
     const [result] = await pool.execute(`DELETE FROM ${MEMBERS_TABLE} WHERE idmember = ?`, [id]);
-    if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
 
-    await deleteUploadRelSafe(imageRel);
+    if (result.affectedRows === 0) {
+      throw createHttpError(404, "Not found");
+    }
 
-    res.json({ ok: true, message: "Deleted", idmember: id });
+    await deleteUploadRelSafe(imageRel).catch(() => {});
+
+    return res.json({ ok: true, message: "Deleted", idmember: id });
   } catch (err) {
-    console.error("DELETE MEMBER ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("DELETE MEMBER ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+    return next(err);
   }
 });
 

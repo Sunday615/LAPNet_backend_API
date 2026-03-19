@@ -1,4 +1,3 @@
-// src/routes/announcement.js
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
@@ -19,17 +18,16 @@ const {
   normalizeAnnouncementRow,
 } = require("../utils/normalize");
 
-// ✅ OPTIONAL sharp (won't crash)
 let sharp = null;
 try {
   sharp = require("sharp");
-} catch (e) {
-  console.warn("⚠️ sharp not installed. Announcement image webp convert will return 501. Run: npm i sharp");
+} catch (_error) {
+  console.warn("sharp is not installed. Announcement image conversion will be unavailable.");
 }
 
 async function convertDiskImageToWebpOrThrow(filePath, quality = 82, resizeWidth = 1024) {
   if (!sharp) {
-    const err = new Error("Sharp not installed - cannot convert to webp. Run: npm i sharp");
+    const err = new Error("Image conversion service is unavailable");
     err.statusCode = 501;
     throw err;
   }
@@ -46,6 +44,45 @@ async function convertDiskImageToWebpOrThrow(filePath, quality = 82, resizeWidth
 
   await fsp.unlink(filePath).catch(() => {});
   return outPath;
+}
+
+function createHttpError(statusCode, message, extra = {}) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  Object.assign(err, extra);
+  return err;
+}
+
+function parsePositiveInt(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function validateOptionalHttpUrl(value, fieldName) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const url = String(value).trim();
+  if (!url) {
+    return null;
+  }
+
+  if (!isValidUrl(url)) {
+    throw createHttpError(400, `${fieldName} must be a valid http/https URL`);
+  }
+
+  return url;
+}
+
+async function cleanupAnnouncementArtifacts(uploadedDiskPath, uploadedWebpRel) {
+  if (uploadedDiskPath) {
+    await fsp.unlink(uploadedDiskPath).catch(() => {});
+  }
+
+  if (uploadedWebpRel) {
+    await deleteUploadRelSafe(uploadedWebpRel).catch(() => {});
+  }
 }
 
 const router = express.Router();
@@ -71,103 +108,107 @@ function pickAnnouncementImageFile(files) {
 
 function pickAnnouncementImageBodyValue(body) {
   if (!body || typeof body !== "object") return undefined;
+
   const keys = ["image", "imageurl", "imageUrl", "Image_url", "Image"];
-  for (const k of keys) {
-    if (body[k] !== undefined) return body[k];
+  for (const key of keys) {
+    if (body[key] !== undefined) {
+      return body[key];
+    }
   }
+
   return undefined;
 }
 
 function normalizeAnnouncementImageInput(raw) {
-  // undefined = not provided (do nothing)
   if (raw === undefined) return undefined;
-
-  // explicit null/empty => remove (table  image NOT NULL -> route will reject when insert)
   if (raw === null) return null;
 
-  let v = raw;
-  if (Array.isArray(v)) v = v[0];
-
-  const s = String(v || "").trim();
-  if (!s) return null;
-
-  // local upload path
-  if (s.startsWith("/uploads/")) return s;
-  if (s.startsWith("uploads/")) return `/${s}`;
-
-  // external URL
-  if (/^https?:\/\//i.test(s)) {
-    if (!isValidUrl(s)) {
-      const err = new Error("image must be a valid http/https URL");
-      err.statusCode = 400;
-      throw err;
-    }
-    return s;
+  let value = raw;
+  if (Array.isArray(value)) {
+    value = value[0];
   }
 
-  const err = new Error("image must be file upload, '/uploads/...' path, or 'http(s)://...' URL");
-  err.statusCode = 400;
-  throw err;
+  const str = String(value || "").trim();
+  if (!str) {
+    return null;
+  }
+
+  if (str.startsWith("/uploads/")) {
+    return str;
+  }
+
+  if (str.startsWith("uploads/")) {
+    return `/${str}`;
+  }
+
+  if (/^https?:\/\//i.test(str)) {
+    if (!isValidUrl(str)) {
+      throw createHttpError(400, "image must be a valid http/https URL");
+    }
+    return str;
+  }
+
+  throw createHttpError(400, "image must be file upload, '/uploads/...' path, or 'http(s)://...' URL");
 }
 
-// POST /api/announcement
-router.post("/", uploadAnnouncement, async (req, res) => {
-  let uploadedDiskPath = ""; // ✅ for cleanup if convert fails
-  let uploadedWebpRel = "";  // ✅ for cleanup if DB insert fails after convert
+router.post("/", uploadAnnouncement, async (req, res, next) => {
+  let uploadedDiskPath = "";
+  let uploadedWebpRel = "";
+
   try {
     const title = String(req.body?.title || "").trim();
     const description = String(req.body?.description || "").trim() || null;
     const active = normalize01(req.body?.active, 0);
 
-    const tfsRaw =
+    const timeForShowRaw =
       req.body?.timeforshow ?? req.body?.timeForShow ?? req.body?.range ?? req.body?.Range ?? req.body?.hours;
-    const timeforshow = normalizeTimeForShow(tfsRaw, 3);
+    const timeforshow = normalizeTimeForShow(timeForShowRaw, 3);
 
-    const linkRaw = String(req.body?.linkpath ?? req.body?.linkPath ?? req.body?.link ?? "").trim();
-    const linkpath = linkRaw ? linkRaw : null;
-    if (!isValidUrl(linkpath)) return res.status(400).json({ ok: false, message: "linkpath must be URL (http/https)" });
+    const linkpath = validateOptionalHttpUrl(
+      req.body?.linkpath ?? req.body?.linkPath ?? req.body?.link ?? null,
+      "linkpath"
+    );
 
     const timeRaw = req.body?.time !== undefined ? String(req.body.time || "").trim() : "";
     if (timeRaw && !isSqlDatetimeLike(timeRaw)) {
-      return res.status(400).json({ ok: false, message: "time must be 'YYYY-MM-DD HH:mm:ss'" });
+      throw createHttpError(400, "time must be 'YYYY-MM-DD HH:mm:ss'");
     }
 
-    if (!title) return res.status(400).json({ ok: false, message: "title is required" });
+    if (!title) {
+      throw createHttpError(400, "title is required");
+    }
 
-    // ✅ image: prefer file, else accept body string
     const imageFile = pickAnnouncementImageFile(req.files);
     let imageFinal = null;
 
     if (imageFile) {
-      // ✅ convert uploaded image -> webp
-      uploadedDiskPath = imageFile.path; // multer disk path
+      uploadedDiskPath = imageFile.path;
       const outPath = await convertDiskImageToWebpOrThrow(uploadedDiskPath, 82, 1024);
       const outFile = path.basename(outPath);
 
       imageFinal = `/uploads/announcement/${outFile}`;
       uploadedWebpRel = imageFinal;
-      uploadedDiskPath = ""; // original already removed
+      uploadedDiskPath = "";
     } else {
       const bodyImgRaw = pickAnnouncementImageBodyValue(req.body);
-      const normalized = normalizeAnnouncementImageInput(bodyImgRaw);
-      imageFinal = normalized ?? null;
+      imageFinal = normalizeAnnouncementImageInput(bodyImgRaw) ?? null;
     }
 
     if (!imageFinal) {
-      return res.status(400).json({ ok: false, message: "image is required (file upload or URL/path string)" });
+      throw createHttpError(400, "image is required (file upload or URL/path string)");
     }
 
-    const cols = ["`image`", "`title`", "`description`", "`active`", "`timeforshow`", "`linkpath`"];
-    const vals = ["?", "?", "?", "?", "?", "?"];
+    const columns = ["`image`", "`title`", "`description`", "`active`", "`timeforshow`", "`linkpath`"];
+    const values = ["?", "?", "?", "?", "?", "?"];
     const params = [imageFinal, title, description, active, timeforshow, linkpath];
 
     if (timeRaw) {
-      cols.splice(4, 0, "`time`");
-      vals.splice(4, 0, "?");
+      columns.splice(4, 0, "`time`");
+      values.splice(4, 0, "?");
       params.splice(4, 0, timeRaw);
     }
 
-    const sql = `INSERT INTO \`${ANNOUNCEMENT_TABLE}\` (${cols.join(", ")}) VALUES (${vals.join(", ")})`;
+    const sql = `INSERT INTO \`${ANNOUNCEMENT_TABLE}\` (${columns.join(", ")}) VALUES (${values.join(", ")})`;
     const [result] = await pool.execute(sql, params);
 
     const [rows] = await pool.query(
@@ -175,63 +216,81 @@ router.post("/", uploadAnnouncement, async (req, res) => {
       [result.insertId]
     );
 
-    res.status(201).json({ ok: true, idannouncement: result.insertId, data: normalizeAnnouncementRow(req, rows[0]) });
+    return res.status(201).json({
+      ok: true,
+      idannouncement: result.insertId,
+      data: normalizeAnnouncementRow(req, rows[0]),
+    });
   } catch (err) {
-    console.error("INSERT ANNOUNCEMENT ERROR:", err);
+    console.error("INSERT ANNOUNCEMENT ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      statusCode: err?.statusCode,
+    });
 
-    // cleanup: original upload if still exists
-    if (uploadedDiskPath) await fsp.unlink(uploadedDiskPath).catch(() => {});
-    // cleanup: webp if convert succeeded but insert failed
-    if (uploadedWebpRel) await deleteUploadRelSafe(uploadedWebpRel);
-
-    const status = err?.statusCode || 500;
-    res.status(status).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    await cleanupAnnouncementArtifacts(uploadedDiskPath, uploadedWebpRel);
+    return next(err);
   }
 });
 
-// GET /api/announcement
-router.get("/", async (req, res) => {
+router.get("/", async (req, res, next) => {
   try {
     const [rows] = await pool.query(`SELECT * FROM \`${ANNOUNCEMENT_TABLE}\` ORDER BY \`idannouncement\` DESC`);
-    res.json({ ok: true, data: rows.map((r) => normalizeAnnouncementRow(req, r)) });
+    return res.json({ ok: true, data: rows.map((row) => normalizeAnnouncementRow(req, row)) });
   } catch (err) {
-    console.error("GET ANNOUNCEMENT ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("GET ANNOUNCEMENT ERROR:", {
+      code: err?.code,
+      message: err?.message,
+    });
+    return next(err);
   }
 });
 
-// GET /api/announcement/:id
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(
       `SELECT * FROM \`${ANNOUNCEMENT_TABLE}\` WHERE \`idannouncement\` = ? LIMIT 1`,
       [id]
     );
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
 
-    res.json({ ok: true, data: normalizeAnnouncementRow(req, rows[0]) });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
+
+    return res.json({ ok: true, data: normalizeAnnouncementRow(req, rows[0]) });
   } catch (err) {
-    console.error("GET ANNOUNCEMENT BY ID ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("GET ANNOUNCEMENT BY ID ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+    return next(err);
   }
 });
 
-// PATCH /api/announcement/:id
-router.patch("/:id", uploadAnnouncement, async (req, res) => {
-  let uploadedDiskPath = ""; // ✅ for cleanup if convert fails
-  let uploadedWebpRel = "";  // ✅ for cleanup if DB update fails after convert
+router.patch("/:id", uploadAnnouncement, async (req, res, next) => {
+  let uploadedDiskPath = "";
+  let uploadedWebpRel = "";
+
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [oldRows] = await pool.query(
       `SELECT * FROM \`${ANNOUNCEMENT_TABLE}\` WHERE \`idannouncement\` = ? LIMIT 1`,
       [id]
     );
-    if (!oldRows.length) return res.status(404).json({ ok: false, message: "Not found" });
+
+    if (!oldRows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
     const oldRow = oldRows[0];
     const oldImageRel = String(oldRow?.image || "").trim();
@@ -241,7 +300,9 @@ router.patch("/:id", uploadAnnouncement, async (req, res) => {
 
     if (req.body?.title !== undefined) {
       const title = String(req.body.title || "").trim();
-      if (!title) return res.status(400).json({ ok: false, message: "title cannot be empty" });
+      if (!title) {
+        throw createHttpError(400, "title cannot be empty");
+      }
       sets.push("`title` = ?");
       params.push(title);
     }
@@ -249,13 +310,12 @@ router.patch("/:id", uploadAnnouncement, async (req, res) => {
     if (req.body?.description !== undefined) {
       const description = String(req.body.description || "").trim();
       sets.push("`description` = ?");
-      params.push(description ? description : null);
+      params.push(description || null);
     }
 
     if (req.body?.active !== undefined) {
-      const active = normalize01(req.body.active, 0);
       sets.push("`active` = ?");
-      params.push(active);
+      params.push(normalize01(req.body.active, 0));
     }
 
     if (
@@ -267,17 +327,15 @@ router.patch("/:id", uploadAnnouncement, async (req, res) => {
     ) {
       const raw =
         req.body?.timeforshow ?? req.body?.timeForShow ?? req.body?.range ?? req.body?.Range ?? req.body?.hours;
-      const timeforshow = normalizeTimeForShow(raw, 3);
       sets.push("`timeforshow` = ?");
-      params.push(timeforshow);
+      params.push(normalizeTimeForShow(raw, 3));
     }
 
     if (req.body?.linkpath !== undefined || req.body?.linkPath !== undefined || req.body?.link !== undefined) {
-      const linkRaw = String(req.body?.linkpath ?? req.body?.linkPath ?? req.body?.link ?? "").trim();
-      const linkpath = linkRaw ? linkRaw : null;
-      if (!isValidUrl(linkpath)) {
-        return res.status(400).json({ ok: false, message: "linkpath must be URL (http/https)" });
-      }
+      const linkpath = validateOptionalHttpUrl(
+        req.body?.linkpath ?? req.body?.linkPath ?? req.body?.link ?? null,
+        "linkpath"
+      );
       sets.push("`linkpath` = ?");
       params.push(linkpath);
     }
@@ -285,25 +343,23 @@ router.patch("/:id", uploadAnnouncement, async (req, res) => {
     if (req.body?.time !== undefined) {
       const timeRaw = String(req.body.time || "").trim();
       if (timeRaw && !isSqlDatetimeLike(timeRaw)) {
-        return res.status(400).json({ ok: false, message: "time must be 'YYYY-MM-DD HH:mm:ss'" });
+        throw createHttpError(400, "time must be 'YYYY-MM-DD HH:mm:ss'");
       }
-      const timeFinal = timeRaw ? timeRaw : nowSqlTimestamp();
+
       sets.push("`time` = ?");
-      params.push(timeFinal);
+      params.push(timeRaw || nowSqlTimestamp());
     }
 
-    // ✅ image update (file OR body string OR image_remove)
     const imageFile = pickAnnouncementImageFile(req.files);
     const bodyImgRaw = pickAnnouncementImageBodyValue(req.body);
 
-    const imgRemoveRaw =
+    const imageRemoveRaw =
       req.body?.image_remove ?? req.body?.imageRemove ?? req.body?.remove_image ?? req.body?.removeImage;
-    const imageRemove = imgRemoveRaw !== undefined ? normalize01(imgRemoveRaw, 0) : 0;
+    const imageRemove = imageRemoveRaw !== undefined ? normalize01(imageRemoveRaw, 0) : 0;
 
     let newImageFinal = undefined;
 
     if (imageFile) {
-      // ✅ convert uploaded image -> webp
       uploadedDiskPath = imageFile.path;
       const outPath = await convertDiskImageToWebpOrThrow(uploadedDiskPath, 82, 1024);
       const outFile = path.basename(outPath);
@@ -317,68 +373,88 @@ router.patch("/:id", uploadAnnouncement, async (req, res) => {
     } else if (bodyImgRaw !== undefined) {
       newImageFinal = normalizeAnnouncementImageInput(bodyImgRaw);
       if (!newImageFinal) {
-        return res.status(400).json({ ok: false, message: "image cannot be empty (table image NOT NULL)" });
+        throw createHttpError(400, "image cannot be empty");
       }
       sets.push("`image` = ?");
       params.push(newImageFinal);
     } else if (imageRemove === 1) {
-      newImageFinal = "";
-      sets.push("`image` = ?");
-      params.push(newImageFinal);
+      throw createHttpError(400, "image cannot be removed because this field is required");
     }
 
-    if (!sets.length) return res.status(400).json({ ok: false, message: "No fields to update" });
+    if (!sets.length) {
+      throw createHttpError(400, "No fields to update");
+    }
 
     params.push(id);
 
     const sql = `UPDATE \`${ANNOUNCEMENT_TABLE}\` SET ${sets.join(", ")} WHERE \`idannouncement\` = ?`;
     const [result] = await pool.execute(sql, params);
-    if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
 
-    // ✅ delete old image if replaced/removed (only local uploads)
-    const didChangeImage = newImageFinal !== undefined && String(newImageFinal ?? "") !== oldImageRel;
-    if (didChangeImage && oldImageRel) await deleteUploadRelSafe(oldImageRel);
+    if (result.affectedRows === 0) {
+      throw createHttpError(404, "Not found");
+    }
+
+    const didChangeImage = newImageFinal !== undefined && String(newImageFinal || "") !== oldImageRel;
+    if (didChangeImage && oldImageRel) {
+      await deleteUploadRelSafe(oldImageRel).catch(() => {});
+    }
 
     const [rows] = await pool.query(
       `SELECT * FROM \`${ANNOUNCEMENT_TABLE}\` WHERE \`idannouncement\` = ? LIMIT 1`,
       [id]
     );
 
-    res.json({ ok: true, data: normalizeAnnouncementRow(req, rows[0]) });
+    return res.json({ ok: true, data: normalizeAnnouncementRow(req, rows[0]) });
   } catch (err) {
-    console.error("PATCH ANNOUNCEMENT ERROR:", err);
+    console.error("PATCH ANNOUNCEMENT ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
 
-    if (uploadedDiskPath) await fsp.unlink(uploadedDiskPath).catch(() => {});
-    if (uploadedWebpRel) await deleteUploadRelSafe(uploadedWebpRel);
-
-    const status = err?.statusCode || 500;
-    res.status(status).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    await cleanupAnnouncementArtifacts(uploadedDiskPath, uploadedWebpRel);
+    return next(err);
   }
 });
 
-// DELETE /api/announcement/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(
       `SELECT \`image\` FROM \`${ANNOUNCEMENT_TABLE}\` WHERE \`idannouncement\` = ? LIMIT 1`,
       [id]
     );
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
     const imageRel = rows[0]?.image || "";
-
     const [result] = await pool.execute(`DELETE FROM \`${ANNOUNCEMENT_TABLE}\` WHERE \`idannouncement\` = ?`, [id]);
-    if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
 
-    await deleteUploadRelSafe(imageRel);
+    if (result.affectedRows === 0) {
+      throw createHttpError(404, "Not found");
+    }
 
-    res.json({ ok: true, message: "Deleted", idannouncement: id, deleted_files: { image: imageRel || null } });
+    await deleteUploadRelSafe(imageRel).catch(() => {});
+
+    return res.json({
+      ok: true,
+      message: "Deleted",
+      idannouncement: id,
+      deleted_files: { image: imageRel || null },
+    });
   } catch (err) {
-    console.error("DELETE ANNOUNCEMENT ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("DELETE ANNOUNCEMENT ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+    return next(err);
   }
 });
 

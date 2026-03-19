@@ -1,4 +1,3 @@
-// src/routes/news.js
 const express = require("express");
 const path = require("path");
 const fs = require("fs/promises");
@@ -8,6 +7,7 @@ const pool = require("../db/pool");
 const { NEWS_TABLE } = require("../config/tables");
 const { upload } = require("../middleware/upload");
 const { deleteUploadRelSafe } = require("../utils/files");
+const { absUrl } = require("../utils/url");
 const {
   normalizeNewsRow,
   safeJson,
@@ -19,17 +19,24 @@ const {
 
 const router = express.Router();
 
-/**
- * Project root assumption:
- * - This file is in: src/routes/news.js
- * - Upload folder is in: <projectRoot>/uploads/...
- */
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+
+function createHttpError(statusCode, message, extra = {}) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  Object.assign(err, extra);
+  return err;
+}
+
+function parsePositiveInt(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
 
 async function ensureDir(dirAbs) {
   try {
     await fs.mkdir(dirAbs, { recursive: true });
-  } catch (_) {}
+  } catch (_error) {}
 }
 
 function isWebpFilename(name) {
@@ -42,39 +49,49 @@ function replaceExtToWebp(filename) {
 }
 
 function relToAbs(rel) {
-  const clean = String(rel || "").replace(/^[\\/]+/, ""); // remove leading "/" or "\"
+  const clean = String(rel || "").replace(/^[\\/]+/, "");
   return path.join(PROJECT_ROOT, clean);
 }
 
-/**
- * Convert uploaded file (multer disk file) to .webp and return new relative url.
- * - Keeps the same folder.
- * - Deletes the original uploaded file after successful conversion.
- */
-async function convertUploadToWebp(file, relOld, relNew) {
-  if (!file) return { relFinal: relOld, converted: false };
+async function cleanupFiles(rels) {
+  for (const rel of Array.isArray(rels) ? rels : []) {
+    await deleteUploadRelSafe(rel).catch(() => {});
+  }
+}
 
-  // If already .webp by name, keep it (still safe)
+function parseTagsInput(raw) {
+  const parsed = safeJson(raw, []);
+  if (!Array.isArray(parsed)) {
+    throw createHttpError(400, "tags must be a JSON array");
+  }
+  return parsed;
+}
+
+function parseKeepGalleryInput(raw) {
+  const parsed = safeJsonArray(parseJsonMaybe(raw, raw), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+async function convertUploadToWebp(file, relOld, relNew) {
+  if (!file) {
+    return { relFinal: relOld, converted: false };
+  }
+
   if (isWebpFilename(file.filename) || isWebpFilename(relOld)) {
     return { relFinal: relOld, converted: false };
   }
 
   const absNew = relToAbs(relNew);
-  const absNewDir = path.dirname(absNew);
-  await ensureDir(absNewDir);
+  await ensureDir(path.dirname(absNew));
 
-  // multer diskStorage typically provides file.path
   const srcAbs = file.path ? path.resolve(file.path) : relToAbs(relOld);
 
-  // Convert -> write .webp
   await sharp(srcAbs)
-    .rotate() // keep orientation
+    .rotate()
     .webp({ quality: 82 })
     .toFile(absNew);
 
-  // Remove original file safely
-  await deleteUploadRelSafe(relOld);
-
+  await deleteUploadRelSafe(relOld).catch(() => {});
   return { relFinal: relNew, converted: true };
 }
 
@@ -84,47 +101,57 @@ const uploadNews = upload.fields([
   { name: "gallery_files", maxCount: 30 },
 ]);
 
-// POST /api/news  (alias /api/news/insert)
-router.post(["/insert", "/"], uploadNews, async (req, res) => {
-  // Track newly-created files for cleanup on error
+router.post(["/insert", "/"], uploadNews, async (req, res, next) => {
   const createdRels = [];
 
   try {
-    const { header_news, category, date_time, sub_header = "", tags = "[]", description_news } = req.body || {};
+    const {
+      header_news,
+      category,
+      date_time,
+      sub_header = "",
+      tags = "[]",
+      description_news,
+    } = req.body || {};
 
-    if (!header_news?.trim()) return res.status(400).json({ ok: false, message: "header_news is required" });
-    if (!category?.trim()) return res.status(400).json({ ok: false, message: "category is required" });
-    if (!date_time?.trim()) return res.status(400).json({ ok: false, message: "date_time is required" });
-    if (!description_news?.trim()) return res.status(400).json({ ok: false, message: "description_news is required" });
+    if (!String(header_news || "").trim()) {
+      throw createHttpError(400, "header_news is required");
+    }
+    if (!String(category || "").trim()) {
+      throw createHttpError(400, "category is required");
+    }
+    if (!String(date_time || "").trim()) {
+      throw createHttpError(400, "date_time is required");
+    }
+    if (!String(description_news || "").trim()) {
+      throw createHttpError(400, "description_news is required");
+    }
 
     const heroFile = pickFirst(req.files?.hero_img);
-    if (!heroFile) return res.status(400).json({ ok: false, message: "hero_img file is required" });
+    if (!heroFile) {
+      throw createHttpError(400, "hero_img file is required");
+    }
 
     const galleryFiles = [...(req.files?.["gallery_files[]"] || []), ...(req.files?.["gallery_files"] || [])];
 
-    // Build original rel paths (as your system expects)
     const heroRelOld = `/uploads/news/${heroFile.filename}`;
-    const heroWebpName = replaceExtToWebp(heroFile.filename);
-    const heroRelNew = `/uploads/news/${heroWebpName}`;
+    const heroRelNew = `/uploads/news/${replaceExtToWebp(heroFile.filename)}`;
 
-    // Convert hero -> webp
     const heroConv = await convertUploadToWebp(heroFile, heroRelOld, heroRelNew);
     const heroUrl = heroConv.relFinal;
     createdRels.push(heroUrl);
 
-    // Gallery convert -> webp
     const galleryUrls = [];
-    for (const f of galleryFiles) {
-      const relOld = `/uploads/news/gallery/${f.filename}`;
-      const relNew = `/uploads/news/gallery/${replaceExtToWebp(f.filename)}`;
+    for (const file of galleryFiles) {
+      const relOld = `/uploads/news/gallery/${file.filename}`;
+      const relNew = `/uploads/news/gallery/${replaceExtToWebp(file.filename)}`;
+      const conv = await convertUploadToWebp(file, relOld, relNew);
 
-      const conv = await convertUploadToWebp(f, relOld, relNew);
       galleryUrls.push(conv.relFinal);
       createdRels.push(conv.relFinal);
     }
 
-    const tagsArr = safeJson(tags, []);
-    const tagsFinal = Array.isArray(tagsArr) ? tagsArr : [];
+    const tagsFinal = parseTagsInput(tags);
 
     const sql = `
       INSERT INTO ${NEWS_TABLE}
@@ -133,88 +160,97 @@ router.post(["/insert", "/"], uploadNews, async (req, res) => {
     `;
 
     const params = [
-      header_news.trim(),
-      category.trim(),
-      date_time.trim(),
-      (sub_header || "").trim() || null,
+      String(header_news).trim(),
+      String(category).trim(),
+      String(date_time).trim(),
+      String(sub_header || "").trim() || null,
       JSON.stringify(tagsFinal),
-      description_news,
+      String(description_news).trim(),
       heroUrl,
       JSON.stringify(galleryUrls),
     ];
 
     const [result] = await pool.execute(sql, params);
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
       idnews: result.insertId,
       data: {
         idnews: result.insertId,
-        header_news: header_news.trim(),
-        category: category.trim(),
-        date_time: date_time.trim(),
-        sub_header: (sub_header || "").trim() || null,
+        header_news: String(header_news).trim(),
+        category: String(category).trim(),
+        date_time: String(date_time).trim(),
+        sub_header: String(sub_header || "").trim() || null,
         tags: tagsFinal,
-        description_news,
+        description_news: String(description_news).trim(),
         hero_img: heroUrl,
-        hero_img_url: require("../utils/url").absUrl(req, heroUrl),
+        hero_img_url: absUrl(req, heroUrl),
         gallery: galleryUrls,
-        gallery_urls: galleryUrls.map((x) => require("../utils/url").absUrl(req, x)),
+        gallery_urls: galleryUrls.map((item) => absUrl(req, item)),
       },
     });
   } catch (err) {
-    console.error("INSERT NEWS ERROR:", err);
+    console.error("INSERT NEWS ERROR:", {
+      code: err?.code,
+      message: err?.message,
+    });
 
-    // Cleanup any files created by conversion
-    for (const rel of createdRels) {
-      await deleteUploadRelSafe(rel);
-    }
-
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    await cleanupFiles(createdRels);
+    return next(err);
   }
 });
 
-// GET /api/news
-router.get("/", async (req, res) => {
+router.get("/", async (req, res, next) => {
   try {
     const [rows] = await pool.query(`SELECT * FROM ${NEWS_TABLE} ORDER BY idnews DESC`);
-    res.json({ ok: true, data: rows.map((r) => normalizeNewsRow(req, r)) });
+    return res.json({ ok: true, data: rows.map((row) => normalizeNewsRow(req, row)) });
   } catch (err) {
-    console.error("GET NEWS ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("GET NEWS ERROR:", {
+      code: err?.code,
+      message: err?.message,
+    });
+    return next(err);
   }
 });
 
-// GET /api/news/:id
-router.get("/:id", async (req, res) => {
+router.get("/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(`SELECT * FROM ${NEWS_TABLE} WHERE idnews = ? LIMIT 1`, [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
-    res.json({ ok: true, data: normalizeNewsRow(req, rows[0]) });
+    return res.json({ ok: true, data: normalizeNewsRow(req, rows[0]) });
   } catch (err) {
-    console.error("GET NEWS BY ID ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("GET NEWS BY ID ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+    return next(err);
   }
 });
 
-// PATCH /api/news/:id
-router.patch("/:id", uploadNews, async (req, res) => {
+router.patch("/:id", uploadNews, async (req, res, next) => {
   let newHeroRel = "";
   let newGalleryRels = [];
-
-  // Track conversion outputs for cleanup on error
   const createdRels = [];
 
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(`SELECT * FROM ${NEWS_TABLE} WHERE idnews = ? LIMIT 1`, [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
     const oldRow = rows[0];
 
@@ -228,7 +264,9 @@ router.patch("/:id", uploadNews, async (req, res) => {
         : String(oldRow?.header_news || "").trim();
 
     const category =
-      req.body?.category !== undefined ? String(req.body.category || "").trim() : String(oldRow?.category || "").trim();
+      req.body?.category !== undefined
+        ? String(req.body.category || "").trim()
+        : String(oldRow?.category || "").trim();
 
     const date_time =
       req.body?.date_time !== undefined
@@ -242,8 +280,7 @@ router.patch("/:id", uploadNews, async (req, res) => {
 
     let tagsFinal = oldTags;
     if (req.body?.tags !== undefined) {
-      const tagsArr = safeJson(req.body.tags, []);
-      tagsFinal = Array.isArray(tagsArr) ? tagsArr : [];
+      tagsFinal = parseTagsInput(req.body.tags);
     }
 
     const description_news =
@@ -251,10 +288,18 @@ router.patch("/:id", uploadNews, async (req, res) => {
         ? String(req.body.description_news || "").trim()
         : String(oldRow?.description_news || "").trim();
 
-    if (!header_news) return res.status(400).json({ ok: false, message: "header_news is required" });
-    if (!category) return res.status(400).json({ ok: false, message: "category is required" });
-    if (!date_time) return res.status(400).json({ ok: false, message: "date_time is required" });
-    if (!description_news) return res.status(400).json({ ok: false, message: "description_news is required" });
+    if (!header_news) {
+      throw createHttpError(400, "header_news is required");
+    }
+    if (!category) {
+      throw createHttpError(400, "category is required");
+    }
+    if (!date_time) {
+      throw createHttpError(400, "date_time is required");
+    }
+    if (!description_news) {
+      throw createHttpError(400, "description_news is required");
+    }
 
     const heroFile = pickFirst(req.files?.hero_img);
     const heroRemove = req.body?.hero_remove !== undefined ? normalize01(req.body.hero_remove, 0) : 0;
@@ -266,26 +311,27 @@ router.patch("/:id", uploadNews, async (req, res) => {
       const heroRelNewCandidate = `/uploads/news/${replaceExtToWebp(heroFile.filename)}`;
 
       const conv = await convertUploadToWebp(heroFile, heroRelOld, heroRelNewCandidate);
-      newHeroRel = conv.relFinal; // for old deletion logic below
+      newHeroRel = conv.relFinal;
       heroFinal = conv.relFinal;
-
       createdRels.push(conv.relFinal);
     } else if (heroRemove === 1) {
-      heroFinal = null;
+      throw createHttpError(400, "hero_img cannot be removed because this field is required");
     } else if (req.body?.keep_hero_img !== undefined) {
-      const keep = String(req.body.keep_hero_img || "").trim();
-      heroFinal = keep || oldHeroRel;
+      const keepHero = String(req.body.keep_hero_img || "").trim();
+      heroFinal = keepHero || oldHeroRel;
     }
 
-    if (!heroFinal) return res.status(400).json({ ok: false, message: "hero_img is required (cannot be empty)" });
+    if (!heroFinal) {
+      throw createHttpError(400, "hero_img is required");
+    }
 
     const galleryFiles = [...(req.files?.["gallery_files[]"] || []), ...(req.files?.["gallery_files"] || [])];
 
     newGalleryRels = [];
-    for (const f of galleryFiles) {
-      const relOld = `/uploads/news/gallery/${f.filename}`;
-      const relNew = `/uploads/news/gallery/${replaceExtToWebp(f.filename)}`;
-      const conv = await convertUploadToWebp(f, relOld, relNew);
+    for (const file of galleryFiles) {
+      const relOld = `/uploads/news/gallery/${file.filename}`;
+      const relNew = `/uploads/news/gallery/${replaceExtToWebp(file.filename)}`;
+      const conv = await convertUploadToWebp(file, relOld, relNew);
 
       newGalleryRels.push(conv.relFinal);
       createdRels.push(conv.relFinal);
@@ -293,13 +339,13 @@ router.patch("/:id", uploadNews, async (req, res) => {
 
     let keepGallery = null;
     if (req.body?.keep_gallery !== undefined) {
-      keepGallery = safeJsonArray(parseJsonMaybe(req.body.keep_gallery, req.body.keep_gallery), []);
+      keepGallery = parseKeepGalleryInput(req.body.keep_gallery);
     }
 
     let galleryFinal = oldGallery;
-    if (keepGallery !== null || newGalleryRels.length) {
-      const base = keepGallery !== null ? keepGallery : oldGallery;
-      galleryFinal = [...base, ...newGalleryRels];
+    if (keepGallery !== null || newGalleryRels.length > 0) {
+      const baseGallery = keepGallery !== null ? keepGallery : oldGallery;
+      galleryFinal = [...baseGallery, ...newGalleryRels];
     }
 
     const sql = `
@@ -329,60 +375,77 @@ router.patch("/:id", uploadNews, async (req, res) => {
     ];
 
     const [result] = await pool.execute(sql, params);
-    if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
-
-    // Delete old hero if replaced/removed
-    if (newHeroRel && oldHeroRel && oldHeroRel !== newHeroRel) await deleteUploadRelSafe(oldHeroRel);
-    if (!heroFinal && oldHeroRel) await deleteUploadRelSafe(oldHeroRel);
-
-    // Delete removed gallery files (only if client provided keep list or uploaded new items)
-    if (keepGallery !== null || newGalleryRels.length) {
-      const removed = (Array.isArray(oldGallery) ? oldGallery : []).filter((rel) => !galleryFinal.includes(rel));
-      for (const rel of removed) await deleteUploadRelSafe(rel);
+    if (result.affectedRows === 0) {
+      throw createHttpError(404, "Not found");
     }
 
-    const [rows2] = await pool.query(`SELECT * FROM ${NEWS_TABLE} WHERE idnews = ? LIMIT 1`, [id]);
-    res.json({ ok: true, message: "Updated", data: normalizeNewsRow(req, rows2[0]) });
+    if (newHeroRel && oldHeroRel && oldHeroRel !== newHeroRel) {
+      await deleteUploadRelSafe(oldHeroRel).catch(() => {});
+    }
+
+    if (keepGallery !== null || newGalleryRels.length > 0) {
+      const removedGallery = (Array.isArray(oldGallery) ? oldGallery : []).filter((rel) => !galleryFinal.includes(rel));
+      for (const rel of removedGallery) {
+        await deleteUploadRelSafe(rel).catch(() => {});
+      }
+    }
+
+    const [updatedRows] = await pool.query(`SELECT * FROM ${NEWS_TABLE} WHERE idnews = ? LIMIT 1`, [id]);
+    return res.json({ ok: true, message: "Updated", data: normalizeNewsRow(req, updatedRows[0]) });
   } catch (err) {
-    console.error("PATCH NEWS ERROR:", err);
+    console.error("PATCH NEWS ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
 
-    // Cleanup any converted files created in this request
-    for (const rel of createdRels) {
-      await deleteUploadRelSafe(rel);
-    }
-
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    await cleanupFiles(createdRels);
+    return next(err);
   }
 });
 
-// DELETE /api/news/:id
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, message: "Invalid id" });
+    const id = parsePositiveInt(req.params.id);
+    if (!id) {
+      throw createHttpError(400, "Invalid id");
+    }
 
     const [rows] = await pool.query(`SELECT hero_img, gallery FROM ${NEWS_TABLE} WHERE idnews = ? LIMIT 1`, [id]);
-    if (!rows.length) return res.status(404).json({ ok: false, message: "Not found" });
+    if (!rows.length) {
+      throw createHttpError(404, "Not found");
+    }
 
     const heroRel = rows[0]?.hero_img || "";
     const galleryRaw = rows[0]?.gallery;
     const galleryArr = safeJsonArray(parseJsonMaybe(galleryRaw, galleryRaw), []);
 
     const [result] = await pool.execute(`DELETE FROM ${NEWS_TABLE} WHERE idnews = ?`, [id]);
-    if (result.affectedRows === 0) return res.status(404).json({ ok: false, message: "Not found" });
+    if (result.affectedRows === 0) {
+      throw createHttpError(404, "Not found");
+    }
 
-    await deleteUploadRelSafe(heroRel);
-    for (const rel of galleryArr) await deleteUploadRelSafe(rel);
+    await deleteUploadRelSafe(heroRel).catch(() => {});
+    for (const rel of galleryArr) {
+      await deleteUploadRelSafe(rel).catch(() => {});
+    }
 
-    res.json({
+    return res.json({
       ok: true,
       message: "Deleted",
       idnews: id,
-      deleted_files: { hero_img: heroRel || null, gallery: Array.isArray(galleryArr) ? galleryArr : [] },
+      deleted_files: {
+        hero_img: heroRel || null,
+        gallery: Array.isArray(galleryArr) ? galleryArr : [],
+      },
     });
   } catch (err) {
-    console.error("DELETE NEWS ERROR:", err);
-    res.status(500).json({ ok: false, code: err.code, message: err.message, sqlMessage: err.sqlMessage });
+    console.error("DELETE NEWS ERROR:", {
+      code: err?.code,
+      message: err?.message,
+      id: req.params.id,
+    });
+    return next(err);
   }
 });
 

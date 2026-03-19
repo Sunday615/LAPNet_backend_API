@@ -49,7 +49,7 @@ const notificationRoutes = pickRouter(require("./routes/notifications"), "notifi
 const boarddirectorRoutes = pickRouter(require("./routes/boarddirector"), "boarddirectorRoutes");
 const visitorsRoutes = pickRouter(require("./routes/visitor/visitors"), "visitorsRoutes");
 const formTemplateRoutes = pickRouter(require("./routes/formtemplete"), "formTemplateRoutes");
-const userloginRoutes = pickRouter(require("./routes/login/users"), "userloginRoutes");
+const userloginRoutes = require("./routes/login/users");
 const authRoutes = pickRouter(require("./routes/login/auth"), "authRoutes");
 const formSubmissionsRoute = pickRouter(
   require("./routes/submission_form/formSubmissions"),
